@@ -3,7 +3,10 @@
 from collections.abc import Generator
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    load_fixture_bytes,
+)
 
 from custom_components.rss_notify.const import (
     CONF_INITIAL_ITEMS,
@@ -18,6 +21,11 @@ from custom_components.rss_notify.const import (
 )
 
 FEED_URL = "https://example.com/rss"
+
+
+def load_feed(name: str) -> bytes:
+    """Return the raw bytes of a feed fixture from `tests/fixtures`."""
+    return load_fixture_bytes(f"{name}.xml")
 
 
 @pytest.fixture(autouse=True)

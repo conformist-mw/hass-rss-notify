@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Blog</title>
+    <link>https://example.com/</link>
+    <description>Posts from the example blog</description>
+    <item>
+      <title>Third post</title>
+      <link>https://example.com/posts/3</link>
+      <guid isPermaLink="false">post-3</guid>
+      <description>&lt;p&gt;Third &amp;amp; newest post&lt;/p&gt;</description>
+      <pubDate>Fri, 24 Jul 2026 12:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Second post</title>
+      <link>https://example.com/posts/2</link>
+      <guid isPermaLink="false">post-2</guid>
+      <description>&lt;p&gt;Second post&lt;/p&gt;</description>
+      <pubDate>Thu, 23 Jul 2026 12:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>First post</title>
+      <link>https://example.com/posts/1</link>
+      <guid isPermaLink="false">post-1</guid>
+      <description>&lt;p&gt;First post&lt;/p&gt;</description>
+      <pubDate>Wed, 22 Jul 2026 12:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

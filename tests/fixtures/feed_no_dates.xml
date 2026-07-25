@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>No Dates Blog</title>
+    <link>https://nodates.example.com/</link>
+    <description>Some items carry no publication date</description>
+    <item>
+      <title>Undated one</title>
+      <link>https://nodates.example.com/posts/a</link>
+      <guid isPermaLink="false">undated-a</guid>
+      <description>No pubDate here</description>
+    </item>
+    <item>
+      <title>Dated newer</title>
+      <link>https://nodates.example.com/posts/b</link>
+      <guid isPermaLink="false">dated-b</guid>
+      <description>Has a pubDate</description>
+      <pubDate>Fri, 24 Jul 2026 07:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Undated two</title>
+      <link>https://nodates.example.com/posts/c</link>
+      <guid isPermaLink="false">undated-c</guid>
+      <description>No pubDate here either</description>
+    </item>
+    <item>
+      <title>Dated older</title>
+      <link>https://nodates.example.com/posts/d</link>
+      <guid isPermaLink="false">dated-d</guid>
+      <description>Has an older pubDate</description>
+      <pubDate>Wed, 22 Jul 2026 07:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
