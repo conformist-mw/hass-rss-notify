@@ -36,9 +36,8 @@ def auto_enable_custom_integrations(
     yield
 
 
-@pytest.fixture
-def mock_config_entry() -> MockConfigEntry:
-    """Return a config entry for a single feed with default options."""
+def make_config_entry(**options: int) -> MockConfigEntry:
+    """Return a config entry for one feed, with default options plus overrides."""
     return MockConfigEntry(
         domain=DOMAIN,
         title="Example Blog",
@@ -48,5 +47,12 @@ def mock_config_entry() -> MockConfigEntry:
             CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
             CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
             CONF_MAX_ITEMS_PER_POLL: DEFAULT_MAX_ITEMS_PER_POLL,
+            **options,
         },
     )
+
+
+@pytest.fixture
+def mock_config_entry() -> MockConfigEntry:
+    """Return a config entry for a single feed with default options."""
+    return make_config_entry()
