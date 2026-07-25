@@ -1,0 +1,12 @@
+{
+  "domain": "rss_notify",
+  "name": "RSS Notify",
+  "codeowners": ["@conformist-mw"],
+  "config_flow": true,
+  "documentation": "https://github.com/conformist-mw/hass-rss-notify",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/conformist-mw/hass-rss-notify/issues",
+  "requirements": ["feedparser>=6.0.11"],
+  "version": "0.1.0"
+}

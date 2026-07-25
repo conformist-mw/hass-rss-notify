@@ -1,0 +1,48 @@
+[project]
+name = "hass-rss-notify"
+version = "0.1.0"
+description = "Home Assistant integration that fires events for new RSS/Atom feed items"
+requires-python = ">=3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+norecursedirs = [".git", ".venv"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = [
+  "A",   # builtins shadowing
+  "ASYNC",
+  "B",   # bugbear
+  "C4",
+  "D",   # pydocstyle - HA requires docstrings everywhere
+  "E",
+  "F",
+  "I",   # isort
+  "N",
+  "PL",
+  "RUF",
+  "SIM",
+  "T20", # no print
+  "TRY",
+  "UP",
+  "W",
+]
+ignore = [
+  "D203",
+  "D213",
+  "TRY003", # long messages in exceptions are fine here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR2004"]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+known-first-party = ["custom_components"]
+combine-as-imports = true
