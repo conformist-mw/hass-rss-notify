@@ -2,29 +2,64 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 
-from .const import CONF_URL
+from .const import DOMAIN
+from .coordinator import RssFeedCoordinator
+from .storage import SeenStore
 
-type RssNotifyConfigEntry = ConfigEntry[RssNotifyRuntimeData]
+PLATFORMS: list[Platform] = [Platform.EVENT]
 
-
-@dataclass
-class RssNotifyRuntimeData:
-    """Runtime data stored on a RSS Notify config entry."""
-
-    url: str
+type RssNotifyConfigEntry = ConfigEntry[RssFeedCoordinator]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: RssNotifyConfigEntry) -> bool:
-    """Set up RSS Notify from a config entry."""
-    entry.runtime_data = RssNotifyRuntimeData(url=entry.data[CONF_URL])
+    """Set up one feed from a config entry."""
+    store = SeenStore(hass, entry.entry_id)
+    await store.async_load()
+
+    coordinator = RssFeedCoordinator(hass, entry, store)
+    entry.runtime_data = coordinator
+    _async_register_device(hass, entry, coordinator)
+
+    # the event entity has to exist before the first poll, otherwise the items
+    # of the initial sync would be published into the void
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await coordinator.async_config_entry_first_refresh()
+
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: RssNotifyConfigEntry) -> bool:
     """Unload a config entry."""
-    return True
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the persisted state of a feed that is being removed."""
+    await SeenStore(hass, entry.entry_id).async_remove()
+
+
+async def _async_options_updated(
+    hass: HomeAssistant, entry: RssNotifyConfigEntry
+) -> None:
+    """Reload the entry so changed options take effect."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+@callback
+def _async_register_device(
+    hass: HomeAssistant, entry: RssNotifyConfigEntry, coordinator: RssFeedCoordinator
+) -> None:
+    """Register the device grouping the entities of one feed."""
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.entry_id)},
+        entry_type=dr.DeviceEntryType.SERVICE,
+        name=coordinator.feed_title,
+        configuration_url=coordinator.url,
+    )

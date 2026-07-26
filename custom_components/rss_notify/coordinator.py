@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .client import (
@@ -20,6 +22,15 @@ from .client import (
     sort_items_oldest_first,
 )
 from .const import (
+    ATTR_ENTRY_ID,
+    ATTR_FEED_TITLE,
+    ATTR_FEED_URL,
+    ATTR_ITEM_ID,
+    ATTR_LINK,
+    ATTR_PUBLISHED,
+    ATTR_SUMMARY,
+    ATTR_SUMMARY_PLAIN,
+    ATTR_TITLE,
     CONF_INITIAL_ITEMS,
     CONF_MAX_ITEMS_PER_POLL,
     CONF_NAME,
@@ -30,10 +41,16 @@ from .const import (
     DEFAULT_TIMEOUT,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
+    EVENT_NEW_ITEM,
 )
 from .storage import SeenStore
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def signal_new_item(entry_id: str) -> str:
+    """Return the dispatcher signal carrying new items of one feed."""
+    return f"{DOMAIN}_new_item_{entry_id}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +143,9 @@ class RssFeedCoordinator(DataUpdateCoordinator[FeedData]):
             emitted, backlog = self._split_batch(unseen)
             to_mark = emitted
 
+        # publish before persisting: a crash in between re-emits rather than
+        # swallows an item (at-least-once event publication)
+        self._emit(emitted)
         await self._async_persist(result, to_mark, hold_validators=bool(backlog))
 
         _LOGGER.debug(
@@ -166,6 +186,28 @@ class RssFeedCoordinator(DataUpdateCoordinator[FeedData]):
 
         if dirty:
             await self._store.async_save()
+
+    def _emit(self, items: list[FeedItem]) -> None:
+        """Publish items on the bus and to this feed's event entity, in order."""
+        signal = signal_new_item(self.config_entry.entry_id)
+        for item in items:
+            payload = self._payload(item)
+            self.hass.bus.async_fire(EVENT_NEW_ITEM, payload)
+            async_dispatcher_send(self.hass, signal, payload)
+
+    def _payload(self, item: FeedItem) -> dict[str, Any]:
+        """Build the event payload of one item, shared by bus and entity."""
+        return {
+            ATTR_ENTRY_ID: self.config_entry.entry_id,
+            ATTR_FEED_URL: self.url,
+            ATTR_FEED_TITLE: self.feed_title,
+            ATTR_ITEM_ID: item.key,
+            ATTR_TITLE: item.title,
+            ATTR_LINK: item.link,
+            ATTR_SUMMARY: item.summary,
+            ATTR_SUMMARY_PLAIN: item.summary_plain,
+            ATTR_PUBLISHED: item.published.isoformat() if item.published else None,
+        }
 
     def _data(self, new_items: list[FeedItem], pending: int) -> FeedData:
         """Wrap the outcome of a poll together with the current feed meta."""
