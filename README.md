@@ -1,5 +1,9 @@
 # RSS Notify
 
+[![CI](https://github.com/conformist-mw/hass-rss-notify/actions/workflows/ci.yml/badge.svg)](https://github.com/conformist-mw/hass-rss-notify/actions/workflows/ci.yml)
+[![HACS: custom repository](https://img.shields.io/badge/HACS-custom-41BDF5.svg)](https://www.hacs.xyz/docs/faq/custom_repositories/)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.7.4%2B-41BDF5.svg)](https://www.home-assistant.io/)
+
 A Home Assistant custom integration that watches RSS/Atom feeds and fires an event for
 every **new** item, so you can wire up any notification method you like (Telegram, the
 mobile app, persistent notifications, TTS) with a regular automation.
@@ -100,7 +104,7 @@ Two surfaces carry the same payload, pick whichever suits the automation:
 | --- | --- |
 | `entry_id` | Config entry id of the feed, handy to filter one feed out of many |
 | `feed_url` | Feed address |
-| `feed_title` | The feed's name as configured — its own title unless you named it |
+| `feed_title` | The name the feed was added under: your name if you gave one, the feed's own title otherwise. Fixed when the feed is added, so it stays stable if the publisher later renames the feed |
 | `item_id` | The dedup key of the item (its GUID, or its link, or a content hash) |
 | `title` | Item title |
 | `link` | Item link |
@@ -251,7 +255,11 @@ The keys live in `.storage/rss_notify.<entry_id>` together with the feed's cache
 validators. The seen-set is insertion-ordered and pruned to the newest 5000 keys, which
 is far above any realistic feed window while keeping the file small.
 
-Two details worth knowing:
+Some feeds list the same item twice in one document — a rewritten entry, or an archive
+merged into the current window. Repeats inside a single fetch are collapsed to their
+first occurrence, so such an item is announced once, not twice.
+
+Two more details worth knowing:
 
 - `ETag`/`Last-Modified` are only stored when a poll leaves nothing pending. While
   items are still trickling out under `max_items_per_poll`, the old validators are kept
@@ -283,20 +291,28 @@ Common cases:
   diagnostics report
 - **no events at all** — check `initial_items`: a feed added with `0` stays silent until
   it publishes something new
-- **an item arrived twice** — its identity changed between polls (the feed rewrote the
-  GUID, the link, or the item text of an item without a GUID), which no dedup can see
-  through
+- **an item arrived twice** — its identity changed between polls: the feed rewrote the
+  GUID, the link, or (for an item without either) the item text, which no dedup can see
+  through. A repeat *within* one fetch is handled and never announced twice
 
 ## Contributing
 
 Issues and pull requests are welcome:
 <https://github.com/conformist-mw/hass-rss-notify/issues>
 
-Development setup:
+Development setup — Python 3.14 or newer, which is what the pinned Home Assistant test
+stack requires:
 
 ```shell
 python3 -m venv .venv
 .venv/bin/pip install -r requirements_test.txt
 .venv/bin/pytest -q
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
+```
+
+Coverage of `custom_components/rss_notify` is expected to stay at 100% statement and
+branch:
+
+```shell
+.venv/bin/pytest --cov=custom_components/rss_notify --cov-branch --cov-report=term-missing
 ```
