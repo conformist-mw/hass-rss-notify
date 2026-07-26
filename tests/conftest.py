@@ -6,6 +6,9 @@ from email.utils import format_datetime
 from http import HTTPStatus
 from typing import Any
 
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 import pytest
 from pytest_homeassistant_custom_component.common import (
@@ -24,6 +27,7 @@ from custom_components.rss_notify.const import (
     DEFAULT_MAX_ITEMS_PER_POLL,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
+    EVENT_TYPE_NEW_ITEM,
     STORAGE_VERSION,
 )
 from custom_components.rss_notify.storage import storage_key
@@ -69,14 +73,14 @@ def mock_config_entry() -> MockConfigEntry:
     return make_config_entry()
 
 
-def feed_bytes(keys: Sequence[str], title: str = FEED_TITLE) -> bytes:
+def feed_bytes(keys: Sequence[str], title: str = FEED_TITLE, body: str = "") -> bytes:
     """Build an RSS feed for `keys` (oldest first), served newest first."""
     items = [
         "<item>"
         f"<title>Post {key}</title>"
         f"<link>https://example.com/posts/{key}</link>"
         f'<guid isPermaLink="false">{key}</guid>'
-        f"<description>Body of {key}</description>"
+        f"<description>{body or f'Body of {key}'}</description>"
         f"<pubDate>{format_datetime(BASE_PUBLISHED + timedelta(days=index))}</pubDate>"
         "</item>"
         for index, key in enumerate(keys)
@@ -141,3 +145,19 @@ def stored(hass_storage: dict[str, Any], entry_id: str) -> dict[str, Any]:
 def sent_headers(aioclient_mock: AiohttpClientMocker) -> dict[str, str]:
     """Return the headers of the most recent request."""
     return aioclient_mock.mock_calls[-1][3]
+
+
+async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Add the entry to hass and set it up, as the UI would."""
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+def event_entity_id(hass: HomeAssistant, entry: MockConfigEntry) -> str:
+    """Return the entity id of the event entity belonging to `entry`."""
+    entity_id = er.async_get(hass).async_get_entity_id(
+        Platform.EVENT, DOMAIN, f"{entry.entry_id}_{EVENT_TYPE_NEW_ITEM}"
+    )
+    assert entity_id is not None
+    return entity_id

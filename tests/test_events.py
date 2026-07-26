@@ -7,7 +7,6 @@ from homeassistant.const import STATE_UNKNOWN, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
     async_capture_events,
 )
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
@@ -33,28 +32,14 @@ from custom_components.rss_notify.storage import storage_key
 from .conftest import (
     FEED_TITLE,
     FEED_URL,
+    event_entity_id,
     make_config_entry,
     seed_store,
     serve_keys,
+    setup_entry,
 )
 
 THREE_POSTS = ["post-1", "post-2", "post-3"]
-
-
-async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> None:
-    """Add the entry to hass and set it up, as the UI would."""
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-
-
-def event_entity_id(hass: HomeAssistant, entry: MockConfigEntry) -> str:
-    """Return the entity id of the event entity belonging to `entry`."""
-    entity_id = er.async_get(hass).async_get_entity_id(
-        Platform.EVENT, DOMAIN, f"{entry.entry_id}_{EVENT_TYPE_NEW_ITEM}"
-    )
-    assert entity_id is not None
-    return entity_id
 
 
 async def test_bus_events_fired_per_item_in_order(
