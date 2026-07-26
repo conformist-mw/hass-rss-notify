@@ -11,7 +11,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import (
+    TimestampDataUpdateCoordinator,
+    UpdateFailed,
+)
 
 from .client import (
     FeedError,
@@ -63,7 +66,7 @@ class FeedData:
     pending: int
 
 
-class RssFeedCoordinator(DataUpdateCoordinator[FeedData]):
+class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
     """Poll one feed and hand out the items that are new since the last poll.
 
     Items are deduplicated against a persistent seen-set, so a restart never
@@ -104,6 +107,18 @@ class RssFeedCoordinator(DataUpdateCoordinator[FeedData]):
     def seen_count(self) -> int:
         """Return how many item keys the feed has marked as seen."""
         return self._store.seen_count
+
+    @property
+    def cache_validators(self) -> dict[str, bool]:
+        """Return which conditional-GET validators are currently stored.
+
+        Reported by presence only: their values say nothing useful once it is
+        known whether the next poll can be answered with a 304 at all.
+        """
+        return {
+            "etag": self._store.etag is not None,
+            "last_modified": self._store.last_modified is not None,
+        }
 
     async def _async_update_data(self) -> FeedData:
         """Fetch the feed once and return the items emitted by this poll."""
