@@ -32,11 +32,15 @@ from custom_components.rss_notify.storage import storage_key
 from .conftest import (
     FEED_TITLE,
     FEED_URL,
+    OTHER_FEED_TITLE,
+    OTHER_FEED_URL,
     event_entity_id,
+    feed_bytes,
     make_config_entry,
     seed_store,
     serve_keys,
     setup_entry,
+    stored,
 )
 
 THREE_POSTS = ["post-1", "post-2", "post-3"]
@@ -68,6 +72,90 @@ async def test_bus_events_fired_per_item_in_order(
         ATTR_SUMMARY_PLAIN: "Body of post-1",
         ATTR_PUBLISHED: "2026-07-01T12:00:00+00:00",
     }
+
+
+async def test_event_contract_uses_the_documented_names(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """The bus event type and the payload keys are the documented literals.
+
+    These strings are the whole consumer API: every user automation matches on
+    them, so they are spelled out here instead of imported from `const.py`, where
+    a rename would silently take the tests with it.
+    """
+    entry = make_config_entry()
+    seed_store(hass_storage, entry.entry_id, ["already-seen"])
+    serve_keys(aioclient_mock, ["post-1"])
+    events = async_capture_events(hass, "rss_notify_new_item")
+
+    await setup_entry(hass, entry)
+
+    assert len(events) == 1
+    assert events[0].event_type == "rss_notify_new_item"
+    assert set(events[0].data) == {
+        "entry_id",
+        "feed_url",
+        "feed_title",
+        "item_id",
+        "title",
+        "link",
+        "summary",
+        "summary_plain",
+        "published",
+    }
+    assert events[0].data["item_id"] == "post-1"
+
+    # the event entity offers the same item under the same names
+    attributes = hass.states.get(event_entity_id(hass, entry)).attributes
+    assert attributes["event_type"] == "new_item"
+    assert attributes["item_id"] == "post-1"
+    assert attributes["summary_plain"] == "Body of post-1"
+
+
+async def test_two_feeds_stay_independent(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """One config entry per feed: events, entities and storage stay separate."""
+    first = make_config_entry()
+    second = make_config_entry(name=OTHER_FEED_TITLE, url=OTHER_FEED_URL)
+    aioclient_mock.get(FEED_URL, content=feed_bytes(["post-1"]))
+    aioclient_mock.get(
+        OTHER_FEED_URL, content=feed_bytes(["other-1"], title=OTHER_FEED_TITLE)
+    )
+    events = async_capture_events(hass, EVENT_NEW_ITEM)
+
+    await setup_entry(hass, first)
+    await setup_entry(hass, second)
+
+    assert first.entry_id != second.entry_id
+    assert [
+        (event.data[ATTR_ENTRY_ID], event.data[ATTR_FEED_URL], event.data[ATTR_ITEM_ID])
+        for event in events
+    ] == [
+        (first.entry_id, FEED_URL, "post-1"),
+        (second.entry_id, OTHER_FEED_URL, "other-1"),
+    ]
+
+    # two devices, two entities, each carrying only its own feed's item
+    registry = er.async_get(hass)
+    first_entity = event_entity_id(hass, first)
+    second_entity = event_entity_id(hass, second)
+    assert first_entity != second_entity
+    assert registry.async_get(first_entity).device_id != (
+        registry.async_get(second_entity).device_id
+    )
+    assert hass.states.get(first_entity).attributes[ATTR_FEED_TITLE] == FEED_TITLE
+    assert hass.states.get(second_entity).attributes[ATTR_FEED_TITLE] == (
+        OTHER_FEED_TITLE
+    )
+
+    # the seen-sets do not know about each other
+    assert stored(hass_storage, first.entry_id)["seen"] == ["post-1"]
+    assert stored(hass_storage, second.entry_id)["seen"] == ["other-1"]
 
 
 async def test_initial_items_reach_the_event_entity(

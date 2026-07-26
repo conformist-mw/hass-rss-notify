@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Undated Blog</title>
+    <link>https://undated.example.com/</link>
+    <description>No item carries a publication date</description>
+    <item>
+      <title>Newest post</title>
+      <link>https://undated.example.com/posts/3</link>
+      <guid isPermaLink="false">u-3</guid>
+      <description>Listed first, so it is the newest</description>
+    </item>
+    <item>
+      <title>Middle post</title>
+      <link>https://undated.example.com/posts/2</link>
+      <guid isPermaLink="false">u-2</guid>
+      <description>Listed second</description>
+    </item>
+    <item>
+      <title>Oldest post</title>
+      <link>https://undated.example.com/posts/1</link>
+      <guid isPermaLink="false">u-1</guid>
+      <description>Listed last, so it is the oldest</description>
+    </item>
+  </channel>
+</rss>

@@ -153,6 +153,36 @@ async def test_prune_keeps_newest_keys_on_save(
     assert persisted[-1] == f"post-{MAX_SEEN_KEYS + overflow - 1}"
 
 
+async def test_touch_moves_known_keys_to_the_newest_end(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Touching a key makes it survive pruning longer; unknown keys are ignored."""
+    seed(hass_storage, ["post-1", "post-2", "post-3"])
+
+    store = SeenStore(hass, ENTRY_ID)
+    await store.async_load()
+    store.touch(["post-1", "never-seen"])
+    await store.async_save()
+
+    assert store.contains("never-seen") is False
+    assert hass_storage[STORE_KEY]["data"]["seen"] == ["post-2", "post-3", "post-1"]
+
+
+async def test_touching_all_keys_keeps_the_seen_set_at_its_size(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Touching every key reorders nothing away: a touch never drops a key."""
+    seed(hass_storage, ["post-1", "post-2"])
+
+    store = SeenStore(hass, ENTRY_ID)
+    await store.async_load()
+    store.touch(["post-2", "post-1"])
+
+    assert store.seen_count == 2
+    assert store.contains("post-1") is True
+    assert store.contains("post-2") is True
+
+
 async def test_save_at_cap_does_not_prune(
     hass: HomeAssistant, hass_storage: dict[str, Any]
 ) -> None:

@@ -100,6 +100,19 @@ class SeenStore:
         for key in keys:
             self._seen.setdefault(key, None)
 
+    def touch(self, keys: Iterable[str]) -> None:
+        """Move keys that are already known to the newest end of the set.
+
+        Keys the feed still lists have to outlive the ones it has dropped:
+        pruning removes the oldest keys, and dropping the key of an item that is
+        still in the document would announce that item a second time. Keys that
+        are not in the seen-set are ignored - they are not seen yet.
+        """
+        for key in keys:
+            if key in self._seen:
+                del self._seen[key]
+                self._seen[key] = None
+
     async def async_save(self) -> None:
         """Persist the current state, pruning the seen-set to its cap."""
         self._prune()

@@ -22,6 +22,7 @@ from custom_components.rss_notify.storage import SeenStore
 from .conftest import (
     FEED_LINK,
     FEED_TITLE,
+    LAST_MODIFIED,
     feed_bytes,
     load_feed,
     make_config_entry,
@@ -86,6 +87,29 @@ async def test_initial_sync(
     assert coordinator.seen_count == 3
 
 
+async def test_initial_sync_is_not_capped_by_max_items_per_poll(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """`initial_items` always wins over `max_items_per_poll` on the first poll.
+
+    The cap protects against a publisher dumping a burst of new items; the
+    initial sync announces a number the user asked for explicitly, once.
+    """
+    entry = make_config_entry(**{CONF_INITIAL_ITEMS: 8, CONF_MAX_ITEMS_PER_POLL: 2})
+    entry.add_to_hass(hass)
+    serve_keys(aioclient_mock, TWENTY_FIVE)
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == TWENTY_FIVE[-8:]
+    assert coordinator.data.pending == 0
+    # every item is seen, so the cap only governs the polls that follow
+    assert stored(hass_storage, entry.entry_id)["seen"] == TWENTY_FIVE
+
+
 async def test_new_items_across_polls(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
@@ -123,7 +147,11 @@ async def test_new_items_emitted_oldest_first_undated_first(
     aioclient_mock: AiohttpClientMocker,
     hass_storage: dict[str, Any],
 ) -> None:
-    """New items are emitted oldest to newest, undated items first."""
+    """New items are emitted oldest to newest, undated items first.
+
+    The fixture lists undated-a, dated-b, undated-c, dated-d. Documents list the
+    newest item first, so the undated pair is emitted bottom-up.
+    """
     entry = make_config_entry()
     entry.add_to_hass(hass)
     # a feed that was synced before, so this poll takes the steady-state path
@@ -133,14 +161,45 @@ async def test_new_items_emitted_oldest_first_undated_first(
     coordinator = await build_coordinator(hass, entry)
     await coordinator.async_refresh()
 
-    assert emitted(coordinator) == ["undated-a", "undated-c", "dated-d", "dated-b"]
+    assert emitted(coordinator) == ["undated-c", "undated-a", "dated-d", "dated-b"]
     assert stored(hass_storage, entry.entry_id)["seen"] == [
         "already-seen",
-        "undated-a",
         "undated-c",
+        "undated-a",
         "dated-d",
         "dated-b",
     ]
+
+
+async def test_undated_feed_announces_the_topmost_item_first_time(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """On a feed that dates nothing, the initial item is the topmost one."""
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    serve(aioclient_mock, content=load_feed("feed_undated"))
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == ["u-3"]
+
+
+async def test_undated_feed_trickles_out_bottom_up(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """A feed that dates nothing is announced from the bottom of the document up."""
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    seed_store(hass_storage, entry.entry_id, ["already-seen"])
+    serve(aioclient_mock, content=load_feed("feed_undated"))
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == ["u-1", "u-2", "u-3"]
 
 
 async def test_repeated_key_in_one_poll_is_emitted_once(
@@ -430,6 +489,96 @@ async def test_not_modified_is_a_no_op(
     assert coordinator.data.feed_title == FEED_TITLE
     assert coordinator.data.feed_link == FEED_LINK
     assert stored(hass_storage, entry.entry_id) == before
+
+
+async def test_last_modified_is_persisted_and_sent_back(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """A feed that only sends `Last-Modified` gets a conditional GET too."""
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    serve_keys(aioclient_mock, ["post-1", "post-2"], last_modified=LAST_MODIFIED)
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    persisted = stored(hass_storage, entry.entry_id)
+    assert persisted["last_modified"] == LAST_MODIFIED
+    assert persisted["etag"] is None
+    assert coordinator.cache_validators == {"etag": False, "last_modified": True}
+
+    serve(aioclient_mock, status=HTTPStatus.NOT_MODIFIED)
+    await coordinator.async_refresh()
+
+    headers = sent_headers(aioclient_mock)
+    assert headers["If-Modified-Since"] == LAST_MODIFIED
+    assert "If-None-Match" not in headers
+    assert coordinator.last_update_success is True
+    assert emitted(coordinator) == []
+
+
+async def test_last_modified_is_held_back_while_a_backlog_is_pending(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """A pending backlog keeps the old `Last-Modified`, like it keeps the ETag."""
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    seed_store(
+        hass_storage,
+        entry.entry_id,
+        ["already-seen"],
+        last_modified="Tue, 21 Jul 2026 12:00:00 GMT",
+    )
+    serve_keys(aioclient_mock, TWENTY_FIVE, last_modified=LAST_MODIFIED)
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    assert coordinator.data.pending == 15
+    assert (
+        stored(hass_storage, entry.entry_id)["last_modified"]
+        == "Tue, 21 Jul 2026 12:00:00 GMT"
+    )
+
+
+async def test_items_still_listed_do_not_age_out_of_the_seen_set(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pruning never drops the key of an item the feed still lists.
+
+    With the seen-set at its cap, adding a new key prunes the oldest one. If
+    that key belonged to an item still in the document - a pinned post, a feed
+    serving its whole archive - the next poll would announce it a second time.
+    """
+    monkeypatch.setattr("custom_components.rss_notify.storage.MAX_SEEN_KEYS", 3)
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    # the seen-set is full and its oldest key is an item the feed still lists
+    seed_store(hass_storage, entry.entry_id, ["post-1", "gone-1", "gone-2"])
+    serve_keys(aioclient_mock, ["post-1", "post-2"])
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == ["post-2"]
+    # the key that aged out belongs to an item the feed dropped long ago
+    assert stored(hass_storage, entry.entry_id)["seen"] == [
+        "gone-2",
+        "post-1",
+        "post-2",
+    ]
+
+    serve_keys(aioclient_mock, ["post-1", "post-2"])
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == []
 
 
 async def test_unlimited_cap_emits_everything(

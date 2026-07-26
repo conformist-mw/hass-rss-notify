@@ -118,19 +118,33 @@ async def test_user_flow_custom_name_wins(
     assert result["data"][CONF_NAME] == "My feed"
 
 
-async def test_user_flow_falls_back_to_url_as_title(
-    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+@pytest.mark.parametrize(
+    ("url", "expected_title"),
+    [
+        (FEED_URL, "example.com"),
+        # the name becomes the entry title, the device name, the entity name and
+        # the feed_title of every event: none of those may carry a credential
+        (
+            "https://feeduser:s3cret@private.example.com/rss?token=t0ken",
+            "private.example.com",
+        ),
+    ],
+)
+async def test_user_flow_falls_back_to_the_feed_host_as_title(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    url: str,
+    expected_title: str,
 ) -> None:
-    """A feed without a title and without a name is titled by its URL."""
-    aioclient_mock.get(FEED_URL, content=UNTITLED_FEED)
+    """A feed without a title and without a name is named after its host."""
+    aioclient_mock.get(url, content=UNTITLED_FEED)
     flow_id = await _start_flow(hass)
 
-    result = await hass.config_entries.flow.async_configure(
-        flow_id, {CONF_URL: FEED_URL}
-    )
+    result = await hass.config_entries.flow.async_configure(flow_id, {CONF_URL: url})
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == FEED_URL
+    assert result["title"] == expected_title
+    assert result["data"][CONF_NAME] == expected_title
 
 
 async def test_duplicate_feed_aborts(

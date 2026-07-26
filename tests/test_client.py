@@ -165,17 +165,38 @@ async def test_key_falls_back_to_fingerprint_and_skips_unidentifiable(
 async def test_sort_items_oldest_first(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    """Items sort oldest to newest with undated items first, in feed order."""
+    """Items sort oldest to newest, undated ones first and document order reversed.
+
+    The fixture lists undated-a, dated-b, undated-c, dated-d. A document lists
+    its newest item first, so undated-c (further down) is older than undated-a.
+    """
     aioclient_mock.get(FEED_URL, content=load_feed("feed_no_dates"))
 
     result = await async_fetch_feed(async_get_clientsession(hass), FEED_URL)
 
     assert isinstance(result, FetchResult)
     assert [item.key for item in sort_items_oldest_first(result.items)] == [
-        "undated-a",
         "undated-c",
+        "undated-a",
         "dated-d",
         "dated-b",
+    ]
+
+
+async def test_sort_of_an_entirely_undated_feed_reverses_the_document(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """With no date anywhere, the topmost item of the document is the newest."""
+    aioclient_mock.get(FEED_URL, content=load_feed("feed_undated"))
+
+    result = await async_fetch_feed(async_get_clientsession(hass), FEED_URL)
+
+    assert isinstance(result, FetchResult)
+    assert [item.key for item in result.items] == ["u-3", "u-2", "u-1"]
+    assert [item.key for item in sort_items_oldest_first(result.items)] == [
+        "u-1",
+        "u-2",
+        "u-3",
     ]
 
 

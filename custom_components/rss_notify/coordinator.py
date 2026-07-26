@@ -183,7 +183,11 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
 
         # publish before persisting: a crash in between re-emits rather than
         # swallows an item (at-least-once event publication)
+        self._mark_recovered()
         self._emit(emitted)
+        # keys the feed still lists must not age out of the seen-set before the
+        # ones it has dropped, or pruning would re-announce an item still listed
+        self._store.touch(item.key for item in ordered)
         await self._async_persist(result, to_mark, hold_validators=bool(backlog))
 
         _LOGGER.debug(
@@ -224,6 +228,21 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
 
         if dirty:
             await self._store.async_save()
+
+    def _mark_recovered(self) -> None:
+        """Flag this poll as successful before any item is published.
+
+        `CoordinatorEntity.available` follows `last_update_success`, and the base
+        class only sets it once `_async_update_data` has returned. Publishing
+        while it is still False after an earlier failed poll would make every
+        per-item state write land as `unavailable`, dropping the item instead of
+        announcing it.
+        """
+        if not self.last_update_success:
+            self.last_update_success = True
+            # logged here because the base class stays quiet about a flag it
+            # finds already set
+            _LOGGER.info("Fetching %s data recovered", self.name)
 
     def _emit(self, items: list[FeedItem]) -> None:
         """Publish items on the bus and to this feed's event entity, in order."""

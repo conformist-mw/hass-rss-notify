@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import urlsplit
 
 from homeassistant.config_entries import (
     ConfigEntry,
@@ -46,6 +47,17 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_NAME): TextSelector(),
     }
 )
+
+
+def _fallback_name(url: str) -> str:
+    """Return the name of a feed that reports no title and was given none.
+
+    Only the host of the URL is used. The name becomes the entry title, the
+    device name, the entity name and the `feed_title` of every event, none of
+    which are ever redacted - while a feed URL commonly carries basic-auth
+    userinfo or an access token.
+    """
+    return urlsplit(url).hostname or "RSS feed"
 
 
 def _count_field(minimum: int) -> vol.All:
@@ -102,7 +114,11 @@ class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.debug("Feed %s is not usable: %s", url, err)
                 errors["base"] = "invalid_feed"
             else:
-                name = (user_input.get(CONF_NAME) or "").strip() or feed_title or url
+                name = (
+                    (user_input.get(CONF_NAME) or "").strip()
+                    or feed_title
+                    or _fallback_name(url)
+                )
                 return self.async_create_entry(
                     title=name,
                     data={CONF_URL: url, CONF_NAME: name},

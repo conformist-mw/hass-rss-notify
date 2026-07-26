@@ -65,9 +65,10 @@ restart Home Assistant.
 | Field | Meaning |
 | --- | --- |
 | URL | The feed address. It is fetched and parsed right away, so a typo or a page that is not a feed is rejected in the dialog. |
-| Name | Optional. Defaults to the title the feed reports; the URL is used if it has none. |
+| Name | Optional. Defaults to the title the feed reports; its host is used if it reports none. |
 
-The URL is the entry's unique id, so the same feed cannot be added twice.
+The URL is the entry's unique id, so the same feed cannot be added twice. Neither the URL
+nor the name can be changed afterwards — see [Managing feeds](#managing-feeds).
 
 Each feed becomes a service device holding one entity:
 
@@ -86,8 +87,8 @@ archive.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `update_interval` | 5 minutes | How often the feed is polled. |
-| `initial_items` | 1 | How many of the newest items are announced when the feed is added. `0` sets the feed up completely silently. Only ever applies to the first poll of a feed. |
-| `max_items_per_poll` | 10 | Upper bound on announcements per poll. Items above the cap stay unseen and are announced on the following polls, oldest first. `0` means unlimited. |
+| `initial_items` | 1 | How many of the newest items are announced when the feed is added. `0` sets the feed up completely silently. Only ever applies to the first poll of a feed, and is never capped by `max_items_per_poll`. |
+| `max_items_per_poll` | 10 | Upper bound on announcements per *regular* poll. Items above the cap stay unseen and are announced on the following polls, oldest first. `0` means unlimited. The first poll of a feed ignores the cap: it always announces `initial_items` items. |
 
 Changing an option reloads the feed; the seen-set is kept.
 
@@ -104,7 +105,7 @@ Two surfaces carry the same payload, pick whichever suits the automation:
 | --- | --- |
 | `entry_id` | Config entry id of the feed, handy to filter one feed out of many |
 | `feed_url` | Feed address |
-| `feed_title` | The name the feed was added under: your name if you gave one, the feed's own title otherwise. Fixed when the feed is added, so it stays stable if the publisher later renames the feed |
+| `feed_title` | The name the feed was added under: your name if you gave one, the feed's own title otherwise (its host if the feed reports no title). Fixed when the feed is added, so it stays stable if the publisher later renames the feed |
 | `item_id` | The dedup key of the item (its GUID, or its link, or a content hash) |
 | `title` | Item title |
 | `link` | Item link |
@@ -241,9 +242,16 @@ actions:
 - **Pause** — disable the config entry (feed's three-dot menu → **Disable**). Polling
   stops and the seen-set is kept, so re-enabling announces what the feed published in
   the meantime — once each, capped by `max_items_per_poll` — and nothing from before.
-- **Reload** — three-dot menu → **Reload**, e.g. after a feed changes its URL scheme.
+- **Reload** — three-dot menu → **Reload**, e.g. to rebuild a feed that is stuck after a
+  long outage without waiting for the next poll. A reload keeps the seen-set and re-reads
+  the stored settings; it does not re-read the feed's URL from anywhere else.
 - **Delete** — deleting the entry removes its device, entity and stored seen-set.
   Adding the same feed again starts over, announcing `initial_items` items.
+
+The URL and the name of a feed are fixed when it is added: the options dialog only offers
+the three polling options, so a feed that moved to a new address has to be deleted and
+added again. That starts its seen-set over, so expect `initial_items` announcements from
+the new entry.
 
 ## How dedup works
 
@@ -258,6 +266,15 @@ is far above any realistic feed window while keeping the file small.
 Some feeds list the same item twice in one document — a rewritten entry, or an archive
 merged into the current window. Repeats inside a single fetch are collapsed to their
 first occurrence, so such an item is announced once, not twice.
+
+Items **without** a publication date are ordered by their position in the document,
+bottom-up: RSS and Atom documents list the newest item first, so for a feed that dates
+nothing at all that position is the only clue about which item is the newest one. Adding
+such a feed therefore announces the item at the top of the document.
+
+Keys of items the feed still lists are refreshed on every poll, so the 5000-key cap
+always drops keys of items that have left the feed window first — an item that stays in
+the document (a pinned post, a full archive) can never age out and be announced again.
 
 Two more details worth knowing:
 

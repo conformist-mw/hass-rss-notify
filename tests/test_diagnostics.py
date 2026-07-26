@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from homeassistant.components.diagnostics import REDACTED
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -31,6 +32,7 @@ from .conftest import (
     feed_bytes,
     make_config_entry,
     seed_store,
+    serve,
     serve_keys,
     setup_entry,
 )
@@ -43,6 +45,9 @@ SECRET_PARTS = ("s3cret", "t0ken", "feeduser")
 REDACTED_URL = (
     f"https://{REDACTED}@example.com/private/rss?token={REDACTED}&fmt={REDACTED}"
 )
+# the same URL as a feed's own <title>, without the `&` an XML title cannot hold
+SECRET_TITLE = "https://feeduser:s3cret@example.com/private/rss?token=t0ken"
+REDACTED_TITLE = f"https://{REDACTED}@example.com/private/rss?token={REDACTED}"
 
 
 def secret_entry() -> MockConfigEntry:
@@ -163,6 +168,56 @@ async def test_diagnostics_redact_urls_quoted_in_the_last_error(
     assert REDACTED in report["last_fetch"]["error"]
     dumped = json.dumps(report)
     assert not any(secret in dumped for secret in SECRET_PARTS)
+
+
+async def test_diagnostics_redact_a_feed_title_that_is_a_url(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """A feed reporting a URL as its own title does not leak it either."""
+    # no configured name, so the feed's own <title> is what gets reported
+    entry = make_config_entry(name=None)
+    aioclient_mock.get(FEED_URL, content=feed_bytes(THREE_POSTS, title=SECRET_TITLE))
+    await setup_entry(hass, entry)
+
+    report = await diagnostics(hass, hass_client, entry)
+
+    assert report["feed"]["title"] == REDACTED_TITLE
+    dumped = json.dumps(report)
+    assert not any(secret in dumped for secret in SECRET_PARTS)
+
+
+async def test_diagnostics_of_a_feed_whose_first_poll_failed(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """A report is downloadable while the entry is still retrying its setup.
+
+    That is exactly the state a user reaches for diagnostics in, and the download
+    endpoint does not require a loaded entry.
+    """
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    serve(aioclient_mock, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+
+    report = await diagnostics(hass, hass_client, entry)
+
+    assert report["state"] == {
+        "seen_count": 0,
+        "cache_validators": {"etag": False, "last_modified": False},
+        # no poll has produced an outcome yet
+        "last_batch_size": None,
+        "pending": None,
+    }
+    assert report["last_fetch"]["success"] is False
+    assert report["last_fetch"]["time"] is None
+    assert "Error fetching feed" in report["last_fetch"]["error"]
 
 
 @pytest.mark.parametrize(

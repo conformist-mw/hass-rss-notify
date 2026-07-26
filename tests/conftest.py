@@ -36,6 +36,11 @@ FEED_URL = "https://example.com/rss"
 FEED_TITLE = "Example Blog"
 FEED_LINK = "https://example.com/"
 BASE_PUBLISHED = datetime(2026, 7, 1, 12, 0, tzinfo=dt_util.UTC)
+LAST_MODIFIED = "Fri, 24 Jul 2026 12:00:00 GMT"
+
+# a second feed, for the tests that check two feeds do not interfere
+OTHER_FEED_URL = "https://other.example.com/feed.xml"
+OTHER_FEED_TITLE = "Other Blog"
 
 
 def load_feed(name: str) -> bytes:
@@ -52,7 +57,7 @@ def auto_enable_custom_integrations(
 
 
 def make_config_entry(
-    *, name: str | None = FEED_TITLE, **options: int
+    *, name: str | None = FEED_TITLE, url: str = FEED_URL, **options: int
 ) -> MockConfigEntry:
     """Return a config entry for one feed, with default options plus overrides.
 
@@ -61,9 +66,9 @@ def make_config_entry(
     """
     return MockConfigEntry(
         domain=DOMAIN,
-        title=name or FEED_URL,
-        unique_id=FEED_URL,
-        data={CONF_URL: FEED_URL} | ({CONF_NAME: name} if name is not None else {}),
+        title=name or url,
+        unique_id=url,
+        data={CONF_URL: url} | ({CONF_NAME: name} if name is not None else {}),
         options={
             CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
             CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
@@ -104,7 +109,7 @@ def serve(
     *,
     content: bytes | None = None,
     status: HTTPStatus = HTTPStatus.OK,
-    etag: str | None = None,
+    headers: dict[str, str] | None = None,
     exc: Exception | None = None,
 ) -> None:
     """Register the single response the next poll will receive."""
@@ -113,7 +118,7 @@ def serve(
         FEED_URL,
         content=content,
         status=status,
-        headers={"ETag": etag} if etag else None,
+        headers=headers,
         exc=exc,
     )
 
@@ -122,9 +127,15 @@ def serve_keys(
     aioclient_mock: AiohttpClientMocker,
     keys: Sequence[str],
     etag: str | None = None,
+    last_modified: str | None = None,
 ) -> None:
-    """Serve a generated feed holding `keys` on the next poll."""
-    serve(aioclient_mock, content=feed_bytes(keys), etag=etag)
+    """Serve a generated feed holding `keys`, with its validators, on the next poll."""
+    validators = {
+        name: value
+        for name, value in (("ETag", etag), ("Last-Modified", last_modified))
+        if value
+    }
+    serve(aioclient_mock, content=feed_bytes(keys), headers=validators or None)
 
 
 def seed_store(
@@ -132,6 +143,7 @@ def seed_store(
     entry_id: str,
     seen: list[str],
     etag: str | None = None,
+    last_modified: str | None = None,
 ) -> None:
     """Pre-populate the persisted state of a feed, as an earlier run would."""
     key = storage_key(entry_id)
@@ -139,7 +151,7 @@ def seed_store(
         "version": STORAGE_VERSION,
         "minor_version": 1,
         "key": key,
-        "data": {"seen": seen, "etag": etag, "last_modified": None},
+        "data": {"seen": seen, "etag": etag, "last_modified": last_modified},
     }
 
 

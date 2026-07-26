@@ -5,6 +5,7 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN
@@ -28,7 +29,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: RssNotifyConfigEntry) ->
     # the event entity has to exist before the first poll, otherwise the items
     # of the initial sync would be published into the void
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    await coordinator.async_config_entry_first_refresh()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady:
+        # HA does not unload an already forwarded platform when the setup of an
+        # entry fails, so the retry would trip over "has already been setup" and
+        # end up with an entity bound to the coordinator of this failed attempt
+        await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        raise
 
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True

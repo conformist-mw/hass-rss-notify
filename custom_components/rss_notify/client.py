@@ -28,9 +28,6 @@ USER_AGENT: Final = "HomeAssistant-rss_notify"
 _TAG_RE: Final = re.compile(r"<[^>]+>")
 _WHITESPACE_RE: Final = re.compile(r"\s+")
 
-# Sort key for items without a publication date, so they come first.
-_UNDATED_SORT_KEY: Final = (0, datetime.min.replace(tzinfo=dt_util.UTC))
-
 
 class FeedError(Exception):
     """Base error for feed handling."""
@@ -147,8 +144,15 @@ async def async_parse_feed(
 
 
 def sort_items_oldest_first(items: Iterable[FeedItem]) -> list[FeedItem]:
-    """Sort items oldest to newest, undated items first, preserving feed order."""
-    return sorted(items, key=_sort_key)
+    """Sort items oldest to newest, undated items first.
+
+    `items` has to be in document order. RSS and Atom documents list the newest
+    item first, so items without a publication date are ordered by their
+    *reversed* document position: for a feed that dates nothing, the position in
+    the document is the only clue about which of its items is the newest one.
+    """
+    positioned = sorted(enumerate(items), key=_sort_key)
+    return [item for _position, item in positioned]
 
 
 def to_plain_text(value: str) -> str:
@@ -158,11 +162,13 @@ def to_plain_text(value: str) -> str:
     return _WHITESPACE_RE.sub(" ", html.unescape(_TAG_RE.sub(" ", value))).strip()
 
 
-def _sort_key(item: FeedItem) -> tuple[int, datetime]:
+def _sort_key(positioned: tuple[int, FeedItem]) -> tuple[int, float]:
     """Return a sort key placing undated items before dated ones."""
+    position, item = positioned
     if item.published is None:
-        return _UNDATED_SORT_KEY
-    return (1, item.published)
+        # a document lists newest first, so a later position is an older item
+        return (0, -position)
+    return (1, item.published.timestamp())
 
 
 def _normalize_entry(entry: Any, url: str) -> FeedItem | None:
