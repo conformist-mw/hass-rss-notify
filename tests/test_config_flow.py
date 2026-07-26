@@ -1,16 +1,19 @@
-"""Tests for the RSS Notify config flow."""
+"""Tests for the RSS Notify config and options flows."""
 
 from collections.abc import Generator
+from datetime import timedelta
 from http import HTTPStatus
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import aiohttp
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+import voluptuous as vol
 
 from custom_components.rss_notify.client import NotModified
 from custom_components.rss_notify.const import (
@@ -25,22 +28,45 @@ from custom_components.rss_notify.const import (
     DOMAIN,
 )
 
-from .conftest import FEED_URL, load_feed
+from .conftest import FEED_URL, load_feed, serve_keys, setup_entry
 
 UNTITLED_FEED = (
     b'<?xml version="1.0"?><rss version="2.0"><channel>'
     b"<item><title>Only post</title><guid>only-1</guid></item>"
     b"</channel></rss>"
 )
+DEFAULT_OPTIONS = {
+    CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
+    CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
+    CONF_MAX_ITEMS_PER_POLL: DEFAULT_MAX_ITEMS_PER_POLL,
+}
+
+
+@pytest.fixture
+def patch_setup() -> bool:
+    """Whether entry setup is mocked away; parametrize to False for a real setup."""
+    return True
 
 
 @pytest.fixture(autouse=True)
-def mock_setup_entry() -> Generator[AsyncMock]:
+def mock_setup_entry(patch_setup: bool) -> Generator[AsyncMock | None]:
     """Prevent the created entry from being set up for real."""
+    if not patch_setup:
+        yield None
+        return
     with patch(
         "custom_components.rss_notify.async_setup_entry", return_value=True
     ) as mock:
         yield mock
+
+
+def suggested_values(schema: vol.Schema) -> dict[str, Any]:
+    """Return the values a form pre-fills, keyed by field name."""
+    return {
+        str(key): key.description["suggested_value"]
+        for key in schema.schema
+        if isinstance(key.description, dict)
+    }
 
 
 async def _start_flow(hass: HomeAssistant) -> str:
@@ -71,11 +97,7 @@ async def test_user_flow_creates_entry(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Example Blog"
     assert result["data"] == {CONF_URL: FEED_URL, CONF_NAME: "Example Blog"}
-    assert result["options"] == {
-        CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
-        CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
-        CONF_MAX_ITEMS_PER_POLL: DEFAULT_MAX_ITEMS_PER_POLL,
-    }
+    assert result["options"] == DEFAULT_OPTIONS
     assert result["result"].unique_id == FEED_URL
     assert len(mock_setup_entry.mock_calls) == 1
 
@@ -181,3 +203,92 @@ async def test_unexpected_not_modified_is_invalid_feed(hass: HomeAssistant) -> N
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_feed"}
+
+
+async def test_options_flow_saves_new_values(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """The options form offers the values in use and stores the submitted ones."""
+    mock_config_entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+    assert suggested_values(result["data_schema"]) == DEFAULT_OPTIONS
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_UPDATE_INTERVAL: 15,
+            CONF_INITIAL_ITEMS: 0,
+            CONF_MAX_ITEMS_PER_POLL: 0,
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    # a number selector yields floats; whole numbers are stored
+    assert result["data"] == {
+        CONF_UPDATE_INTERVAL: 15,
+        CONF_INITIAL_ITEMS: 0,
+        CONF_MAX_ITEMS_PER_POLL: 0,
+    }
+    assert all(isinstance(value, int) for value in result["data"].values())
+    assert dict(mock_config_entry.options) == result["data"]
+
+
+@pytest.mark.parametrize(
+    "invalid_option",
+    [
+        {CONF_UPDATE_INTERVAL: 0},
+        {CONF_INITIAL_ITEMS: -1},
+        {CONF_MAX_ITEMS_PER_POLL: -1},
+    ],
+)
+async def test_options_flow_rejects_values_below_the_minimum(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    invalid_option: dict[str, int],
+) -> None:
+    """Values under the field minimum are refused and change nothing."""
+    mock_config_entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+
+    with pytest.raises(InvalidData):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"], {**DEFAULT_OPTIONS, **invalid_option}
+        )
+
+    assert dict(mock_config_entry.options) == DEFAULT_OPTIONS
+
+
+@pytest.mark.parametrize("patch_setup", [False])
+async def test_options_flow_reload_applies_the_new_options(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """Saving options reloads the feed, so its coordinator polls with them."""
+    serve_keys(aioclient_mock, ["post-1", "post-2"])
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.update_interval == timedelta(minutes=DEFAULT_UPDATE_INTERVAL)
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_UPDATE_INTERVAL: 15,
+            CONF_INITIAL_ITEMS: 3,
+            CONF_MAX_ITEMS_PER_POLL: 0,
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    reloaded = mock_config_entry.runtime_data
+    assert reloaded is not coordinator
+    assert reloaded.update_interval == timedelta(minutes=15)
+    assert reloaded.initial_items == 3
+    assert reloaded.max_items_per_poll == 0

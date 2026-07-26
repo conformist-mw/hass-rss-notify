@@ -5,9 +5,18 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -39,10 +48,39 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
+def _count_field(minimum: int) -> vol.All:
+    """Return a whole-number field with `minimum` enforced by the schema.
+
+    A number selector hands back a float, so the value is coerced to `int`:
+    both counts are used as list indices and the interval as whole minutes.
+    """
+    return vol.All(
+        NumberSelector(
+            NumberSelectorConfig(min=minimum, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Coerce(int),
+    )
+
+
+OPTIONS_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_UPDATE_INTERVAL): _count_field(1),
+        vol.Required(CONF_INITIAL_ITEMS): _count_field(0),
+        vol.Required(CONF_MAX_ITEMS_PER_POLL): _count_field(0),
+    }
+)
+
+
 class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for RSS Notify."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> RssNotifyOptionsFlow:
+        """Return the options flow handling the per-feed options."""
+        return RssNotifyOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -90,3 +128,23 @@ class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
             # unreachable in practice: the flow never sends cache validators
             raise FeedParseError(f"Unexpected 'not modified' response from {url}")
         return result.feed_title
+
+
+class RssNotifyOptionsFlow(OptionsFlow):
+    """Handle the polling options of one configured feed."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the options form, pre-filled with the values in use."""
+        if user_input is not None:
+            # the entry's update listener reloads the feed, which rebuilds the
+            # coordinator from the new options
+            return self.async_create_entry(data=user_input)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                OPTIONS_SCHEMA, self.config_entry.options
+            ),
+        )
