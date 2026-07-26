@@ -100,7 +100,7 @@ Two surfaces carry the same payload, pick whichever suits the automation:
 | --- | --- |
 | `entry_id` | Config entry id of the feed, handy to filter one feed out of many |
 | `feed_url` | Feed address |
-| `feed_title` | Feed title |
+| `feed_title` | The feed's name as configured — its own title unless you named it |
 | `item_id` | The dedup key of the item (its GUID, or its link, or a content hash) |
 | `title` | Item title |
 | `link` | Item link |

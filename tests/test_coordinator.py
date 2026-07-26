@@ -1,10 +1,11 @@
 """Tests for the feed coordinator: dedup, ordering, initial sync and trickle."""
 
 from http import HTTPStatus
+import logging
 from typing import Any
 
 import aiohttp
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import UpdateFailed
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -13,6 +14,7 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 from custom_components.rss_notify.const import (
     CONF_INITIAL_ITEMS,
     CONF_MAX_ITEMS_PER_POLL,
+    EVENT_NEW_ITEM,
 )
 from custom_components.rss_notify.coordinator import RssFeedCoordinator
 from custom_components.rss_notify.storage import SeenStore
@@ -20,6 +22,7 @@ from custom_components.rss_notify.storage import SeenStore
 from .conftest import (
     FEED_LINK,
     FEED_TITLE,
+    feed_bytes,
     load_feed,
     make_config_entry,
     seed_store,
@@ -138,6 +141,241 @@ async def test_new_items_emitted_oldest_first_undated_first(
         "dated-d",
         "dated-b",
     ]
+
+
+async def test_repeated_key_in_one_poll_is_emitted_once(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """An item listed twice in the same document is emitted once."""
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    seed_store(hass_storage, entry.entry_id, ["already-seen"])
+    # the feed lists post-2 twice, with different dates
+    serve_keys(aioclient_mock, ["post-1", "post-2", "post-2"])
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == ["post-1", "post-2"]
+    assert coordinator.data.pending == 0
+    assert stored(hass_storage, entry.entry_id)["seen"] == [
+        "already-seen",
+        "post-1",
+        "post-2",
+    ]
+
+
+async def test_repeated_key_in_the_initial_sync_is_emitted_once(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """The initial batch counts a repeated item once, not once per listing."""
+    entry = make_config_entry(**{CONF_INITIAL_ITEMS: 2})
+    entry.add_to_hass(hass)
+    # the newest item is listed three times, so without dedup the two newest
+    # listings would both be part of the initial batch
+    serve_keys(aioclient_mock, ["post-1", "post-2", "post-2", "post-2"])
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == ["post-1", "post-2"]
+    assert stored(hass_storage, entry.entry_id)["seen"] == ["post-1", "post-2"]
+
+
+async def test_feed_without_guids_dedups_by_link(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """A feed whose items carry no guid is deduplicated by item link."""
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    serve(aioclient_mock, content=load_feed("feed_no_guid"))
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == ["https://noguid.example.com/posts/2"]
+    assert stored(hass_storage, entry.entry_id)["seen"] == [
+        "https://noguid.example.com/posts/1",
+        "https://noguid.example.com/posts/2",
+    ]
+
+    # the unchanged feed emits nothing on the next poll: links identify the items
+    serve(aioclient_mock, content=load_feed("feed_no_guid"))
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == []
+
+
+async def test_items_without_identity_are_ignored_every_poll(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An item with no usable identity is skipped, the fingerprinted one is stable."""
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    seed_store(hass_storage, entry.entry_id, ["already-seen"])
+    serve(aioclient_mock, content=load_feed("feed_no_ids"))
+
+    coordinator = await build_coordinator(hass, entry)
+    with caplog.at_level(logging.WARNING):
+        await coordinator.async_refresh()
+
+    # only the fingerprinted item exists as far as the coordinator is concerned
+    assert len(emitted(coordinator)) == 1
+    fingerprint = emitted(coordinator)[0]
+    assert stored(hass_storage, entry.entry_id)["seen"] == ["already-seen", fingerprint]
+    assert "without any usable identity" in caplog.text
+
+    # the fingerprint is stable, so the next poll of the same feed emits nothing
+    serve(aioclient_mock, content=load_feed("feed_no_ids"))
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == []
+    assert coordinator.seen_count == 2
+
+
+async def test_not_modified_while_a_backlog_is_pending_keeps_the_backlog(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """A 304 arriving mid-trickle changes nothing; the backlog resumes after it.
+
+    The held-back validators make a 304 unlikely, but a server answering one
+    anyway must not consume the pending items.
+    """
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    seed_store(hass_storage, entry.entry_id, ["already-seen"], etag='"v0"')
+    serve_keys(aioclient_mock, TWENTY_FIVE, etag='"v1"')
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+    assert emitted(coordinator) == TWENTY_FIVE[:10]
+    before = dict(stored(hass_storage, entry.entry_id))
+
+    serve(aioclient_mock, status=HTTPStatus.NOT_MODIFIED)
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == []
+    assert stored(hass_storage, entry.entry_id) == before
+
+    # the next full response continues the trickle where it stopped
+    serve_keys(aioclient_mock, TWENTY_FIVE, etag='"v1"')
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == TWENTY_FIVE[10:20]
+    assert coordinator.data.pending == 5
+
+
+async def test_items_are_published_before_they_are_marked_seen(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """The store is saved only after the batch is published (at-least-once).
+
+    Persisting first would turn a crash mid-poll into a lost item instead of a
+    repeated one, which is the opposite of the documented guarantee.
+    """
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    seed_store(hass_storage, entry.entry_id, ["already-seen"])
+    serve_keys(aioclient_mock, ["post-1", "post-2"])
+    seen_at_publish: list[list[str]] = []
+
+    @callback
+    def _snapshot(event: Event) -> None:
+        seen_at_publish.append(list(stored(hass_storage, entry.entry_id)["seen"]))
+
+    hass.bus.async_listen(EVENT_NEW_ITEM, _snapshot)
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert emitted(coordinator) == ["post-1", "post-2"]
+    # neither item was seen on disk while it was being published
+    assert seen_at_publish == [["already-seen"], ["already-seen"]]
+    assert stored(hass_storage, entry.entry_id)["seen"] == [
+        "already-seen",
+        "post-1",
+        "post-2",
+    ]
+
+
+async def test_store_is_saved_once_per_poll_and_only_when_needed(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A batch costs one save; a poll that changes nothing costs none."""
+    saves: list[int] = []
+    original = SeenStore.async_save
+
+    async def counting_save(store: SeenStore) -> None:
+        saves.append(1)
+        await original(store)
+
+    monkeypatch.setattr(SeenStore, "async_save", counting_save)
+
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    seed_store(hass_storage, entry.entry_id, ["already-seen"], etag='"v1"')
+    serve_keys(aioclient_mock, TWENTY_FIVE[:10], etag='"v1"')
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    # ten items, one save
+    assert len(emitted(coordinator)) == 10
+    assert len(saves) == 1
+
+    # the same feed content with the same validators changes nothing to persist
+    serve_keys(aioclient_mock, TWENTY_FIVE[:10], etag='"v1"')
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == []
+    assert len(saves) == 1
+
+
+async def test_configured_name_stays_the_reported_feed_title(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A name configured for the feed is not overwritten by the feed's title."""
+    entry = make_config_entry(name="Work RSS")
+    entry.add_to_hass(hass)
+    serve(aioclient_mock, content=feed_bytes(["post-1"], title="Example Blog"))
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    assert coordinator.feed_title == "Work RSS"
+    assert coordinator.data.feed_title == "Work RSS"
+
+
+async def test_feed_title_is_discovered_when_no_name_is_configured(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Without a configured name the feed's own title is adopted."""
+    entry = make_config_entry(name=None)
+    entry.add_to_hass(hass)
+    serve(aioclient_mock, content=feed_bytes(["post-1"], title="Discovered Blog"))
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    assert coordinator.feed_title == "Discovered Blog"
+    assert coordinator.data.feed_title == "Discovered Blog"
 
 
 async def test_restart_does_not_reemit(

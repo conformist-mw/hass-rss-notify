@@ -2,8 +2,8 @@
 
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import STATE_UNKNOWN, Platform
+from homeassistant.config_entries import ConfigEntryDisabler, ConfigEntryState
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from pytest_homeassistant_custom_component.common import (
@@ -142,6 +142,45 @@ async def test_options_change_reloads_the_entry(
     assert entry.state is ConfigEntryState.LOADED
     assert entry.runtime_data is not coordinator
     assert entry.runtime_data.update_interval.total_seconds() == 30 * 60
+
+
+async def test_disabling_the_entry_pauses_polling_without_reemitting(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Disabling a feed stops it; re-enabling announces only what came in between."""
+    entry = make_config_entry()
+    serve_keys(aioclient_mock, THREE_POSTS)
+    events = async_capture_events(hass, EVENT_NEW_ITEM)
+    await setup_entry(hass, entry)
+    assert [event.data[ATTR_ITEM_ID] for event in events] == ["post-3"]
+
+    # pause: HA unloads the entry, so nothing is polled while it is disabled
+    assert await hass.config_entries.async_set_disabled_by(
+        entry.entry_id, ConfigEntryDisabler.USER
+    )
+    await hass.async_block_till_done()
+
+    entity_id = event_entity_id(hass, entry)
+    assert entry.state is ConfigEntryState.NOT_LOADED
+    assert er.async_get(hass).async_get(entity_id).disabled_by is (
+        er.RegistryEntryDisabler.CONFIG_ENTRY
+    )
+    assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+
+    # the feed publishes two items while the entry is paused
+    serve_keys(aioclient_mock, [*THREE_POSTS, "post-4", "post-5"])
+    assert await hass.config_entries.async_set_disabled_by(entry.entry_id, None)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert er.async_get(hass).async_get(entity_id).disabled_by is None
+    # the seen-set survived the pause: only the two new items are announced
+    assert [event.data[ATTR_ITEM_ID] for event in events] == [
+        "post-3",
+        "post-4",
+        "post-5",
+    ]
+    assert hass.states.get(entity_id).attributes[ATTR_ITEM_ID] == "post-5"
 
 
 async def test_removing_the_entry_deletes_the_stored_state(

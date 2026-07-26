@@ -56,6 +56,25 @@ def signal_new_item(entry_id: str) -> str:
     return f"{DOMAIN}_new_item_{entry_id}"
 
 
+def _drop_repeated_keys(items: list[FeedItem], url: str) -> list[FeedItem]:
+    """Return the items of one fetch with repeated keys collapsed.
+
+    A feed may list the same item twice (a rewritten entry, a merged archive).
+    The seen-set is only consulted before the batch is emitted, so without this
+    an item repeated inside a single document would be emitted twice.
+    """
+    unique: dict[str, FeedItem] = {}
+    for item in items:
+        unique.setdefault(item.key, item)
+    if len(unique) != len(items):
+        _LOGGER.debug(
+            "Feed %s listed %s item(s) with a key it uses more than once",
+            url,
+            len(items) - len(unique),
+        )
+    return list(unique.values())
+
+
 @dataclass(frozen=True, slots=True)
 class FeedData:
     """Outcome of a single poll, exposed as coordinator data to consumers."""
@@ -85,7 +104,10 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
         """Initialize the coordinator of one feed from its config entry."""
         options = entry.options
         self.url: str = entry.data[CONF_URL]
-        self.feed_title: str = entry.data.get(CONF_NAME) or entry.title
+        # a name configured for the feed is what the device and the entity are
+        # named after, so it also stays the title reported to consumers
+        self._configured_title: str = (entry.data.get(CONF_NAME) or "").strip()
+        self.feed_title: str = self._configured_title or entry.title
         self.feed_link: str = ""
         self.initial_items: int = options.get(CONF_INITIAL_ITEMS, DEFAULT_INITIAL_ITEMS)
         self.max_items_per_poll: int = options.get(
@@ -138,13 +160,14 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
             # persisted; the feed meta of the previous poll is kept
             return self._data(new_items=[], pending=0)
 
-        self.feed_title = result.feed_title or self.feed_title
+        if not self._configured_title:
+            self.feed_title = result.feed_title or self.feed_title
         self.feed_link = result.feed_link or self.feed_link
         return await self._async_process(result)
 
     async def _async_process(self, result: FetchResult) -> FeedData:
         """Select the items to emit from a fetched feed and persist the state."""
-        ordered = sort_items_oldest_first(result.items)
+        ordered = _drop_repeated_keys(sort_items_oldest_first(result.items), self.url)
         first_refresh = self._store.is_new
 
         if first_refresh:

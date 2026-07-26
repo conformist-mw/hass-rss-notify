@@ -51,13 +51,19 @@ def auto_enable_custom_integrations(
     yield
 
 
-def make_config_entry(**options: int) -> MockConfigEntry:
-    """Return a config entry for one feed, with default options plus overrides."""
+def make_config_entry(
+    *, name: str | None = FEED_TITLE, **options: int
+) -> MockConfigEntry:
+    """Return a config entry for one feed, with default options plus overrides.
+
+    `name` is the name configured for the feed; `None` leaves it unset, as an
+    entry created before the config flow started storing one would be.
+    """
     return MockConfigEntry(
         domain=DOMAIN,
-        title=FEED_TITLE,
+        title=name or FEED_URL,
         unique_id=FEED_URL,
-        data={CONF_URL: FEED_URL, CONF_NAME: FEED_TITLE},
+        data={CONF_URL: FEED_URL} | ({CONF_NAME: name} if name is not None else {}),
         options={
             CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
             CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
