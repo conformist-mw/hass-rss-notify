@@ -4,6 +4,7 @@ from datetime import datetime
 import hashlib
 from http import HTTPStatus
 import logging
+import traceback
 from typing import Any
 
 import aiohttp
@@ -11,8 +12,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.redact import REDACTED
 from homeassistant.util import dt as dt_util
+from multidict import CIMultiDict, CIMultiDictProxy
 import pytest
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+from yarl import URL
 
 from custom_components.rss_notify.client import (
     USER_AGENT,
@@ -304,6 +307,50 @@ async def test_errors_never_quote_the_feed_credentials(
     message = str(raised.value)
     assert REDACTED in message
     assert not any(secret in message for secret in SECRET_PARTS)
+
+
+def _real_aiohttp_error() -> aiohttp.ClientResponseError:
+    """Return the error real aiohttp raises for a 5xx, credentials included.
+
+    `aioclient_mock` fabricates the `request_info` of the errors it raises, so its
+    URL is not the one under test - the leak this guards against simply cannot
+    occur through the mocker. Real aiohttp puts `request_info.real_url` in the
+    message, which is the full URL with its userinfo and query, so the error has
+    to be built by hand for the test to mean anything.
+    """
+    url = URL(SECRET_URL)
+    info = aiohttp.RequestInfo(url, "GET", CIMultiDictProxy(CIMultiDict()), url)
+    return aiohttp.ClientResponseError(
+        info, (), status=HTTPStatus.INTERNAL_SERVER_ERROR, message="Server Error"
+    )
+
+
+async def test_the_traceback_of_a_failed_fetch_leaks_nothing(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The logged traceback carries no credentials, not only the message.
+
+    `DataUpdateCoordinator` logs the whole exception chain with `exc_info=True`
+    at debug level - the level the troubleshooting docs tell users to turn on -
+    and the transport's own message quotes the URL unmasked. So the formatted
+    traceback, which is what actually reaches the log, is what has to be clean;
+    asserting on `str(err)` alone would miss a chained cause entirely.
+    """
+    cause = _real_aiohttp_error()
+    assert any(secret in str(cause) for secret in SECRET_PARTS), (
+        "the fixture must carry the credentials, or this test proves nothing"
+    )
+    aioclient_mock.get(SECRET_URL, exc=cause)
+
+    with pytest.raises(FeedFetchError) as raised:
+        await async_fetch_feed(hass, SECRET_URL)
+
+    logged = "".join(
+        traceback.format_exception(
+            type(raised.value), raised.value, raised.value.__traceback__
+        )
+    )
+    assert not any(secret in logged for secret in SECRET_PARTS)
 
 
 async def test_atom_feed_uses_id_content_and_updated(hass: HomeAssistant) -> None:

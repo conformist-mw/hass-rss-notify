@@ -51,17 +51,27 @@ def _fallback_name(url: str) -> str:
     return urlsplit(url).hostname or "RSS feed"
 
 
-def _whole_number_field(minimum: int) -> vol.All:
-    """Return a whole-number field with `minimum` enforced by the schema.
+def _whole_number(value: float) -> int:
+    """Return `value` as an `int`, rejecting anything with a fractional part.
 
-    A number selector hands back a float, so the value is coerced to `int`: the
-    two counts are used as list indices and the interval as whole minutes.
+    A number selector hands back a float and does not enforce its own `step`, so
+    a fraction would otherwise be truncated in silence - and truncation is not a
+    harmless rounding here: `max_items_per_poll: 0.9` would become `0`, which
+    means *unlimited*, the opposite of what such a value asks for.
     """
+    number = float(value)
+    if not number.is_integer():
+        raise vol.Invalid("expected a whole number")
+    return int(number)
+
+
+def _whole_number_field(minimum: int) -> vol.All:
+    """Return a whole-number field with `minimum` enforced by the schema."""
     return vol.All(
         NumberSelector(
             NumberSelectorConfig(min=minimum, step=1, mode=NumberSelectorMode.BOX)
         ),
-        vol.Coerce(int),
+        _whole_number,
     )
 
 

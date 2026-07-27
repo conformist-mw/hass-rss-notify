@@ -35,12 +35,10 @@ from .conftest import (
     setup_entry,
 )
 
-REDACTED_URL = (
-    f"https://{REDACTED}@example.com/private/rss?token={REDACTED}&fmt={REDACTED}"
-)
+REDACTED_URL = f"https://{REDACTED}@example.com/private/rss?{REDACTED}"
 # the same URL as a feed's own <title>, without the `&` an XML title cannot hold
 SECRET_TITLE = "https://feeduser:s3cret@example.com/private/rss?token=t0ken"
-REDACTED_TITLE = f"https://{REDACTED}@example.com/private/rss?token={REDACTED}"
+REDACTED_TITLE = REDACTED_URL
 # a feed whose <link> - not its URL - is where the secret sits
 SECRET_LINK = "https://example.com/private?key=s3cret"
 
@@ -186,7 +184,7 @@ async def test_diagnostics_redact_the_feed_link(
 
     report = await diagnostics(hass, hass_client, entry)
 
-    assert report["feed"]["link"] == f"https://example.com/private?key={REDACTED}"
+    assert report["feed"]["link"] == f"https://example.com/private?{REDACTED}"
     assert "s3cret" not in json.dumps(report)
 
 

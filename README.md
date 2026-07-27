@@ -298,6 +298,12 @@ A few more details worth knowing:
   would strand the backlog. They are stored again with the poll that drains the backlog.
 - the seen-set is saved *after* the events are fired, which is what makes publication
   at-least-once rather than at-most-once.
+- items held back by `max_items_per_poll` are not queued anywhere. They are simply left
+  unseen, and the next poll finds them in the document again — which is what makes the
+  trickle survive a restart without a second piece of stored state. The trade-off: an item
+  that leaves the feed's window before a poll gets to it is never announced. That needs a
+  feed publishing more than `max_items_per_poll` items per interval *and* a short window,
+  so if you follow such a feed, raise the cap or shorten `update_interval`.
 - every request is bounded by a fixed 30 second timeout and a 16 MiB response limit;
   neither is configurable.
 

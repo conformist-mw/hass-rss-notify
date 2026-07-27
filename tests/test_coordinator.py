@@ -258,6 +258,47 @@ async def test_repeated_key_in_one_poll_is_emitted_once(
     ]
 
 
+async def test_a_repeated_key_is_announced_from_its_current_listing(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """The copy the feed lists first wins, not whichever copy is dated oldest.
+
+    A feed that republishes an item under the same guid lists its current copy
+    first and may keep a stale one further down (a merged archive). Collapsing
+    repeats on the sorted batch instead of on the document would hand the win to
+    the oldest date, announcing content the feed has already replaced. Asserting
+    the key alone cannot see the difference - the title is what differs.
+    """
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    # document order, newest first: the current copy of `dup`, an unrelated item,
+    # then the stale copy of `dup` carrying the oldest date of the three
+    serve(
+        aioclient_mock,
+        content=(
+            b'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>'
+            b"<title>Example Blog</title><link>https://example.com</link>"
+            b"<item><title>current</title><guid>dup</guid>"
+            b"<pubDate>Fri, 03 Jul 2026 10:00:00 +0000</pubDate></item>"
+            b"<item><title>other</title><guid>other</guid>"
+            b"<pubDate>Thu, 02 Jul 2026 10:00:00 +0000</pubDate></item>"
+            b"<item><title>stale</title><guid>dup</guid>"
+            b"<pubDate>Wed, 01 Jul 2026 10:00:00 +0000</pubDate></item>"
+            b"</channel></rss>"
+        ),
+    )
+    seed_store(hass_storage, entry.entry_id, ["already-seen"])
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    announced = [(item.key, item.title) for item in coordinator.data.new_items]
+    # `dup` keeps the date of the copy that won, so it still sorts after `other`
+    assert announced == [("other", "other"), ("dup", "current")]
+
+
 async def test_repeated_key_in_the_initial_sync_is_emitted_once(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,

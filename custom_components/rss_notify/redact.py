@@ -7,13 +7,17 @@ entry's failure reason in the UI.
 
 The path is *not* masked: it is what identifies the feed in a report, and a
 secret placed there (`/feed/<token>`) cannot be told apart from a normal path.
+
+The query is masked whole, keys included. A token is as often a bare key
+(`?s3cret`) or a key named after itself as it is a value, and no rule can tell
+an authenticating parameter from a formatting one.
 """
 
 from __future__ import annotations
 
 import re
 from typing import Final
-from urllib.parse import parse_qsl, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 # the canonical constant: `homeassistant.components.diagnostics` states the same
 # value, but importing the component would drag `http` and `websocket_api` into
@@ -26,7 +30,7 @@ _URL_RE: Final = re.compile(r"""[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s'"<>]+""")
 
 
 def redact_url(url: str) -> str:
-    """Return `url` with userinfo, query values and fragment masked."""
+    """Return `url` with userinfo, the whole query and the fragment masked."""
     if not url:
         return ""
     try:
@@ -38,15 +42,12 @@ def redact_url(url: str) -> str:
         return REDACTED
 
     userinfo, _, host = parts.netloc.rpartition("@")
-    query = "&".join(
-        f"{key}={REDACTED}" for key, _ in parse_qsl(parts.query, keep_blank_values=True)
-    )
     return urlunsplit(
         (
             parts.scheme,
             f"{REDACTED}@{host}" if userinfo else host,
             parts.path,
-            query,
+            REDACTED if parts.query else "",
             "",
         )
     )

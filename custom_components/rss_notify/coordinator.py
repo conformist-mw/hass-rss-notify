@@ -127,7 +127,10 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
 
     async def _async_process(self, result: FetchResult) -> FeedData:
         """Select the items to emit from a fetched feed and persist the state."""
-        ordered = self._drop_repeated_keys(sort_items_oldest_first(result.items))
+        # collapse repeats on *document* order, before sorting: the feed's first
+        # listing of a key is its current one, and sorting first would hand the
+        # win to whichever copy carries the oldest date - a stale archive copy
+        ordered = sort_items_oldest_first(self._drop_repeated_keys(result.items))
         first_refresh = self.store.is_new
 
         if first_refresh and not ordered:
@@ -241,7 +244,10 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
         A feed may list the same item twice (a rewritten entry, a merged archive).
         The seen-set is only consulted before the batch is emitted, so without
         this an item repeated inside a single document would be emitted twice.
-        First occurrence wins.
+
+        The first occurrence in the document wins, which is why this runs on the
+        feed's own order rather than on the sorted batch: a feed lists its
+        current copy of an item before any stale duplicate of it.
         """
         unique: dict[str, FeedItem] = {}
         for item in items:

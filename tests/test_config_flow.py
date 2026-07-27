@@ -279,6 +279,37 @@ async def test_options_flow_rejects_values_below_the_minimum(
     assert dict(mock_config_entry.options) == DEFAULT_OPTIONS
 
 
+@pytest.mark.parametrize(
+    "fractional_option",
+    [
+        # 0.9 is the one that bites: truncating it yields 0, and 0 means
+        # *unlimited*, the opposite of what such a value asks for
+        {CONF_MAX_ITEMS_PER_POLL: 0.9},
+        {CONF_INITIAL_ITEMS: 1.5},
+        {CONF_UPDATE_INTERVAL: 5.5},
+    ],
+)
+async def test_options_flow_rejects_fractional_values(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    fractional_option: dict[str, float],
+) -> None:
+    """A fraction is refused rather than silently truncated.
+
+    A number selector does not enforce its own `step`, so nothing but this stops
+    a fraction reaching the coercion that would round it away.
+    """
+    mock_config_entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+
+    with pytest.raises(InvalidData):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"], {**DEFAULT_OPTIONS, **fractional_option}
+        )
+
+    assert dict(mock_config_entry.options) == DEFAULT_OPTIONS
+
+
 @pytest.mark.parametrize("patch_setup", [False])
 async def test_options_flow_reload_applies_the_new_options(
     hass: HomeAssistant,

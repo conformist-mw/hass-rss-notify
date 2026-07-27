@@ -108,14 +108,18 @@ async def async_fetch_feed(
             payload = await response.content.read(MAX_FEED_BYTES + 1)
             new_etag = response.headers.get("ETag")
             new_last_modified = response.headers.get("Last-Modified")
-    except TimeoutError as err:
-        raise FeedFetchError(f"Timeout fetching feed from {redact_url(url)}") from err
+    # `from None` on both: the transport exception quotes the raw URL in its own
+    # message, and `DataUpdateCoordinator` logs the whole chain with
+    # `exc_info=True` at debug level - the very level the troubleshooting docs
+    # tell users to turn on. Suppressing the cause keeps the credentials out of
+    # that traceback; nothing is lost, because the transport's own text is folded
+    # into the redacted message below.
+    except TimeoutError:
+        raise FeedFetchError(f"Timeout fetching feed from {redact_url(url)}") from None
     except aiohttp.ClientError as err:
-        # the transport quotes the raw URL in its own message, so redact the
-        # whole composed text rather than only the part built here
         raise FeedFetchError(
             redact_urls(f"Error fetching feed from {url}: {err}")
-        ) from err
+        ) from None
 
     if len(payload) > MAX_FEED_BYTES:
         raise FeedFetchError(
