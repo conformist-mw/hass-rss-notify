@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import aiohttp
 from homeassistant.config_entries import SOURCE_USER
+from homeassistant.const import CONF_NAME, CONF_URL
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 import pytest
@@ -16,12 +17,11 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 import voluptuous as vol
 
 from custom_components.rss_notify.client import NotModified
+from custom_components.rss_notify.config_flow import _fallback_name
 from custom_components.rss_notify.const import (
     CONF_INITIAL_ITEMS,
     CONF_MAX_ITEMS_PER_POLL,
-    CONF_NAME,
     CONF_UPDATE_INTERVAL,
-    CONF_URL,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
 )
@@ -137,6 +137,16 @@ async def test_user_flow_falls_back_to_the_feed_host_as_title(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == expected_title
+
+
+def test_the_host_fallback_always_yields_a_name() -> None:
+    """A URL without a host still produces a usable entry title.
+
+    The validation fetch rejects a hostless URL long before the name is built, so
+    the flow cannot reach this - but a config entry may not carry an empty title,
+    and `urlsplit().hostname` is `None` for such a URL.
+    """
+    assert _fallback_name("https:///feed.xml") == "RSS feed"
 
 
 async def test_duplicate_feed_aborts(

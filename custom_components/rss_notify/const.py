@@ -4,10 +4,9 @@ from typing import Final
 
 DOMAIN: Final = "rss_notify"
 
-# Config entry data key
-CONF_URL: Final = "url"
-# config flow field only: the name is stored as the entry title, not in the data
-CONF_NAME: Final = "name"
+# the entry's data key (`CONF_URL`) and the flow's name field (`CONF_NAME`) are
+# the ones `homeassistant.const` already defines; only the keys that are specific
+# to this integration live here
 
 # Config entry option keys
 CONF_UPDATE_INTERVAL: Final = "update_interval"
@@ -20,7 +19,7 @@ DEFAULT_INITIAL_ITEMS: Final = 1
 DEFAULT_MAX_ITEMS_PER_POLL: Final = 10  # 0 = unlimited
 
 # Fetching (both fixed, not exposed as options)
-DEFAULT_TIMEOUT: Final = 30  # seconds
+FETCH_TIMEOUT: Final = 30  # seconds
 MAX_FEED_BYTES: Final = 16 * 1024 * 1024  # a feed document larger than this is refused
 
 # Persistent seen-store

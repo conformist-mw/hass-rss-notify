@@ -3,10 +3,9 @@
 from collections.abc import Generator, Sequence
 from datetime import datetime, timedelta
 from email.utils import format_datetime
-from http import HTTPStatus
 from typing import Any
 
-from homeassistant.const import Platform
+from homeassistant.const import CONF_URL, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -22,7 +21,6 @@ from custom_components.rss_notify.const import (
     CONF_INITIAL_ITEMS,
     CONF_MAX_ITEMS_PER_POLL,
     CONF_UPDATE_INTERVAL,
-    CONF_URL,
     DEFAULT_INITIAL_ITEMS,
     DEFAULT_MAX_ITEMS_PER_POLL,
     DEFAULT_UPDATE_INTERVAL,
@@ -41,6 +39,13 @@ LAST_MODIFIED = "Fri, 24 Jul 2026 12:00:00 GMT"
 # a second feed, for the tests that check two feeds do not interfere
 OTHER_FEED_URL = "https://other.example.com/feed.xml"
 OTHER_FEED_TITLE = "Other Blog"
+
+# the item keys the generated feed carries by default, oldest first
+THREE_POSTS = ["post-1", "post-2", "post-3"]
+
+# a feed behind basic auth whose query string carries an access token
+SECRET_URL = "https://feeduser:s3cret@example.com/private/rss?token=t0ken&fmt=xml"
+SECRET_PARTS = ("s3cret", "t0ken", "feeduser")
 
 # the options every entry is created with, as the config flow writes them
 DEFAULT_OPTIONS = {
@@ -115,27 +120,23 @@ def feed_bytes(keys: Sequence[str], title: str = FEED_TITLE, body: str = "") -> 
 
 
 def serve(
-    aioclient_mock: AiohttpClientMocker,
-    *,
-    content: bytes | None = None,
-    status: HTTPStatus = HTTPStatus.OK,
-    headers: dict[str, str] | None = None,
-    exc: Exception | None = None,
+    aioclient_mock: AiohttpClientMocker, *, url: str = FEED_URL, **response: Any
 ) -> None:
-    """Register the single response the next poll will receive."""
+    """Register the single response the next poll of `url` will receive.
+
+    `response` is handed to the mocker unchanged (`content`, `status`, `headers`,
+    `exc`). Earlier registrations are cleared, so a test that needs two feeds
+    answering at the same time serves them one entry setup at a time.
+    """
     aioclient_mock.clear_requests()
-    aioclient_mock.get(
-        FEED_URL,
-        content=content,
-        status=status,
-        headers=headers,
-        exc=exc,
-    )
+    aioclient_mock.get(url, **response)
 
 
 def serve_keys(
     aioclient_mock: AiohttpClientMocker,
     keys: Sequence[str],
+    *,
+    url: str = FEED_URL,
     etag: str | None = None,
     last_modified: str | None = None,
 ) -> None:
@@ -145,7 +146,7 @@ def serve_keys(
         for name, value in (("ETag", etag), ("Last-Modified", last_modified))
         if value
     }
-    serve(aioclient_mock, content=feed_bytes(keys), headers=validators or None)
+    serve(aioclient_mock, url=url, content=feed_bytes(keys), headers=validators or None)
 
 
 def seed_store(

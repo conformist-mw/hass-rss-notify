@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_URL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import (
@@ -36,13 +37,13 @@ from .const import (
     CONF_INITIAL_ITEMS,
     CONF_MAX_ITEMS_PER_POLL,
     CONF_UPDATE_INTERVAL,
-    CONF_URL,
     DEFAULT_INITIAL_ITEMS,
     DEFAULT_MAX_ITEMS_PER_POLL,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
     EVENT_NEW_ITEM,
 )
+from .redact import redact_url
 from .storage import SeenStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,25 +52,6 @@ _LOGGER = logging.getLogger(__name__)
 def signal_new_item(entry_id: str) -> str:
     """Return the dispatcher signal carrying new items of one feed."""
     return f"{DOMAIN}_new_item_{entry_id}"
-
-
-def _drop_repeated_keys(items: list[FeedItem], url: str) -> list[FeedItem]:
-    """Return the items of one fetch with repeated keys collapsed.
-
-    A feed may list the same item twice (a rewritten entry, a merged archive).
-    The seen-set is only consulted before the batch is emitted, so without this
-    an item repeated inside a single document would be emitted twice.
-    """
-    unique: dict[str, FeedItem] = {}
-    for item in items:
-        unique.setdefault(item.key, item)
-    if len(unique) != len(items):
-        _LOGGER.debug(
-            "Feed %s listed %s item(s) with a key it uses more than once",
-            url,
-            len(items) - len(unique),
-        )
-    return list(unique.values())
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +81,9 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
         """Initialize the coordinator of one feed from its config entry."""
         options = entry.options
         self.url: str = entry.data[CONF_URL]
+        # every log line quotes the masked URL: a log is shared as readily as a
+        # diagnostics report, and the URL commonly carries a token
+        self._log_url: str = redact_url(self.url)
         # the entry title is the feed's name: the config flow puts the user's
         # name (or the feed's own title, or its host) there, and HA keeps it in
         # step with a rename in the UI. The device, the entity and the payload
@@ -142,7 +127,7 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
 
     async def _async_process(self, result: FetchResult) -> FeedData:
         """Select the items to emit from a fetched feed and persist the state."""
-        ordered = _drop_repeated_keys(sort_items_oldest_first(result.items), self.url)
+        ordered = self._drop_repeated_keys(sort_items_oldest_first(result.items))
         first_refresh = self.store.is_new
 
         if first_refresh and not ordered:
@@ -151,7 +136,7 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
             # publishes later would arrive as a capped steady-state batch
             # instead of the promised `initial_items` announcement.
             _LOGGER.debug(
-                "Feed %s is empty, keeping the initial sync pending", self.url
+                "Feed %s is empty, keeping the initial sync pending", self._log_url
             )
             return FeedData(new_items=[], pending=0)
 
@@ -173,11 +158,11 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
         # keys the feed still lists must not age out of the seen-set before the
         # ones it has dropped, or pruning would re-announce an item still listed
         self.store.touch(item.key for item in ordered)
-        await self._async_persist(result, to_mark, hold_validators=bool(backlog))
+        await self._async_persist(result, to_mark, clear_validators=bool(backlog))
 
         _LOGGER.debug(
             "Poll of %s emitted %s item(s), %s pending%s",
-            self.url,
+            self._log_url,
             len(emitted),
             len(backlog),
             " (first sync)" if first_refresh else "",
@@ -185,32 +170,32 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
         return FeedData(new_items=emitted, pending=len(backlog))
 
     async def _async_persist(
-        self, result: FetchResult, to_mark: list[FeedItem], hold_validators: bool
+        self, result: FetchResult, to_mark: list[FeedItem], clear_validators: bool
     ) -> None:
-        """Mark items seen and save once, holding back validators if needed.
+        """Mark items seen and save once, clearing the validators if needed.
 
         The save happens after the items have been handed to consumers, so a
-        crash re-emits rather than loses an item (at-least-once publication).
+        crash re-emits rather than loses an item (at-least-once publication). The
+        store reports whether either write changed anything, so a poll that
+        found nothing new costs no disk write at all.
         """
-        added = [item.key for item in to_mark if not self.store.contains(item.key)]
-        dirty = bool(added) or self.store.is_new
-        self.store.add(added)
+        dirty = self.store.add(item.key for item in to_mark) or self.store.is_new
 
-        if hold_validators:
+        if clear_validators:
             # the stored validators are cleared, not kept: the next poll has to
             # get the full document to continue the trickle, and a server may
             # answer 304 for a validator it still considers current (a coarse
             # Last-Modified, or a 200 served with an unchanged ETag)
             _LOGGER.debug(
-                "Clearing cache validators of %s while a backlog is pending", self.url
+                "Clearing cache validators of %s while a backlog is pending",
+                self._log_url,
             )
-        wanted = (
-            (None, None) if hold_validators else (result.etag, result.last_modified)
+        validators = (
+            (None, None) if clear_validators else (result.etag, result.last_modified)
         )
-        dirty = dirty or wanted != (self.store.etag, self.store.last_modified)
-        self.store.etag, self.store.last_modified = wanted
-
-        if dirty:
+        # the validator write must happen either way, so it goes first: `or` would
+        # skip it if the added keys had already decided the save
+        if self.store.set_validators(*validators) or dirty:
             await self.store.async_save()
 
     def _mark_recovered(self) -> None:
@@ -249,6 +234,25 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
             ATTR_SUMMARY_PLAIN: item.summary_plain,
             ATTR_PUBLISHED: item.published.isoformat() if item.published else None,
         }
+
+    def _drop_repeated_keys(self, items: list[FeedItem]) -> list[FeedItem]:
+        """Return the items of one fetch with repeated keys collapsed.
+
+        A feed may list the same item twice (a rewritten entry, a merged archive).
+        The seen-set is only consulted before the batch is emitted, so without
+        this an item repeated inside a single document would be emitted twice.
+        First occurrence wins.
+        """
+        unique: dict[str, FeedItem] = {}
+        for item in items:
+            unique.setdefault(item.key, item)
+        if len(unique) != len(items):
+            _LOGGER.debug(
+                "Feed %s listed %s item(s) with a key it uses more than once",
+                self._log_url,
+                len(items) - len(unique),
+            )
+        return list(unique.values())
 
     def _split_batch(
         self, unseen: list[FeedItem]

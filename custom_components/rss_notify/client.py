@@ -20,7 +20,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_TIMEOUT, MAX_FEED_BYTES
+from .const import FETCH_TIMEOUT, MAX_FEED_BYTES
 from .redact import redact_url, redact_urls
 
 _LOGGER = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ async def async_fetch_feed(
     url: str,
     etag: str | None = None,
     last_modified: str | None = None,
-    timeout_seconds: int = DEFAULT_TIMEOUT,
+    timeout_seconds: int = FETCH_TIMEOUT,
 ) -> FetchResult | NotModified:
     """Fetch a feed with a conditional GET, then parse and normalize it.
 
@@ -154,9 +154,9 @@ async def async_parse_feed(
         for entry in parsed.entries
         if (item := _normalize_entry(entry, url=url)) is not None
     ]
+    feed = parsed.get("feed") or {}
     # feedparser strips text nodes itself; stripping again costs nothing and
     # keeps the guarantee (a padded title would name the device and the entity)
-    feed = parsed.get("feed") or {}
     return FetchResult(
         items=items,
         feed_title=(feed.get("title") or "").strip(),

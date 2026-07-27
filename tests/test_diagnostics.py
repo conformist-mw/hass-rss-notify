@@ -1,14 +1,13 @@
-"""Tests for the config entry diagnostics and their URL redaction."""
+"""Tests for the config entry diagnostics report."""
 
 from http import HTTPStatus
 import json
 from typing import Any
 
-from homeassistant.components.diagnostics import REDACTED
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.redact import REDACTED
 from homeassistant.util import dt as dt_util
-import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.components.diagnostics import (
     get_diagnostics_for_config_entry,
@@ -19,13 +18,15 @@ from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 from custom_components.rss_notify.const import (
     CONF_MAX_ITEMS_PER_POLL,
 )
-from custom_components.rss_notify.redact import redact_url, redact_urls
 
 from .conftest import (
     DEFAULT_OPTIONS,
     FEED_LINK,
     FEED_TITLE,
     FEED_URL,
+    SECRET_PARTS,
+    SECRET_URL,
+    THREE_POSTS,
     feed_bytes,
     make_config_entry,
     seed_store,
@@ -34,11 +35,6 @@ from .conftest import (
     setup_entry,
 )
 
-THREE_POSTS = ["post-1", "post-2", "post-3"]
-
-# a feed behind basic auth whose query string carries an access token
-SECRET_URL = "https://feeduser:s3cret@example.com/private/rss?token=t0ken&fmt=xml"
-SECRET_PARTS = ("s3cret", "t0ken", "feeduser")
 REDACTED_URL = (
     f"https://{REDACTED}@example.com/private/rss?token={REDACTED}&fmt={REDACTED}"
 )
@@ -123,7 +119,7 @@ async def test_diagnostics_redact_the_feed_url(
 ) -> None:
     """Userinfo and query values of the feed URL never leave the instance."""
     entry = secret_entry()
-    aioclient_mock.get(SECRET_URL, content=feed_bytes(THREE_POSTS))
+    serve(aioclient_mock, url=SECRET_URL, content=feed_bytes(THREE_POSTS))
     await setup_entry(hass, entry)
 
     report = await diagnostics(hass, hass_client, entry)
@@ -140,11 +136,10 @@ async def test_diagnostics_redact_urls_quoted_in_the_last_error(
 ) -> None:
     """A failed poll reports its error with the URLs it quotes masked."""
     entry = secret_entry()
-    aioclient_mock.get(SECRET_URL, content=feed_bytes(THREE_POSTS))
+    serve(aioclient_mock, url=SECRET_URL, content=feed_bytes(THREE_POSTS))
     await setup_entry(hass, entry)
 
-    aioclient_mock.clear_requests()
-    aioclient_mock.get(SECRET_URL, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+    serve(aioclient_mock, url=SECRET_URL, status=HTTPStatus.INTERNAL_SERVER_ERROR)
     await entry.runtime_data.async_refresh()
 
     report = await diagnostics(hass, hass_client, entry)
@@ -166,7 +161,7 @@ async def test_diagnostics_redact_a_feed_title_that_is_a_url(
     name, and that title may well be a URL with a token in it.
     """
     entry = make_config_entry(title=SECRET_TITLE)
-    aioclient_mock.get(FEED_URL, content=feed_bytes(THREE_POSTS))
+    serve(aioclient_mock, content=feed_bytes(THREE_POSTS))
     await setup_entry(hass, entry)
 
     report = await diagnostics(hass, hass_client, entry)
@@ -186,7 +181,7 @@ async def test_diagnostics_redact_the_feed_link(
     body = feed_bytes(THREE_POSTS).replace(
         f"<link>{FEED_LINK}</link>".encode(), f"<link>{SECRET_LINK}</link>".encode()
     )
-    aioclient_mock.get(FEED_URL, content=body)
+    serve(aioclient_mock, content=body)
     await setup_entry(hass, entry)
 
     report = await diagnostics(hass, hass_client, entry)
@@ -251,37 +246,3 @@ async def test_diagnostics_of_a_feed_whose_first_poll_failed(
     assert report["last_fetch"]["success"] is False
     assert report["last_fetch"]["time"] is None
     assert "Error fetching feed" in report["last_fetch"]["error"]
-
-
-@pytest.mark.parametrize(
-    ("url", "expected"),
-    [
-        ("", ""),
-        # nothing that can be masked field by field is passed through at all
-        ("http://[::1", REDACTED),
-        ("mailto:feeds@example.com", REDACTED),
-        ("https://example.com:8080/feed.xml", "https://example.com:8080/feed.xml"),
-        ("https://example.com/feed#s3cret", "https://example.com/feed"),
-        ("https://example.com/feed?bare", f"https://example.com/feed?bare={REDACTED}"),
-        (
-            "https://user:pw@example.com/feed?a=1&b=2",
-            f"https://{REDACTED}@example.com/feed?a={REDACTED}&b={REDACTED}",
-        ),
-    ],
-)
-def test_redact_url(url: str, expected: str) -> None:
-    """Every part of a URL that can carry a secret is masked."""
-    assert redact_url(url) == expected
-
-
-def test_redact_urls_masks_any_scheme_quoted_in_text() -> None:
-    """URLs inside a message are masked whatever scheme the transport used."""
-    text = "cannot reach 'feed+ftp://user:pw@example.com/feed?token=t0ken' twice"
-
-    masked = redact_urls(text)
-
-    assert "pw" not in masked
-    assert "t0ken" not in masked
-    assert masked == (
-        f"cannot reach 'feed+ftp://{REDACTED}@example.com/feed?token={REDACTED}' twice"
-    )

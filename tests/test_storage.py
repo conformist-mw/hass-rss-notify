@@ -8,23 +8,10 @@ import pytest
 from custom_components.rss_notify.const import MAX_SEEN_KEYS, STORAGE_VERSION
 from custom_components.rss_notify.storage import SeenStore, storage_key
 
+from .conftest import seed_store
+
 ENTRY_ID = "01JABCDEF0123456789"
 STORE_KEY = f"rss_notify.{ENTRY_ID}"
-
-
-def seed(
-    hass_storage: dict[str, Any],
-    seen: list[str],
-    etag: str | None = None,
-    last_modified: str | None = None,
-) -> None:
-    """Pre-populate the mocked storage with state for the test entry."""
-    hass_storage[STORE_KEY] = {
-        "version": STORAGE_VERSION,
-        "minor_version": 1,
-        "key": STORE_KEY,
-        "data": {"seen": seen, "etag": etag, "last_modified": last_modified},
-    }
 
 
 def test_storage_key() -> None:
@@ -72,8 +59,9 @@ async def test_files_are_written_and_read_as_schema_version_one(
 
 async def test_load_existing(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
     """Persisted keys and validators are loaded back."""
-    seed(
+    seed_store(
         hass_storage,
+        ENTRY_ID,
         ["post-1", "post-2"],
         etag='"abc"',
         last_modified="Fri, 24 Jul 2026 12:00:00 GMT",
@@ -118,8 +106,7 @@ async def test_add_save_reload_roundtrip(
 
     store.add(["post-1", "post-2"])
     store.add(["post-2", "post-3"])  # duplicates are ignored
-    store.etag = '"xyz"'
-    store.last_modified = "Sat, 25 Jul 2026 09:00:00 GMT"
+    store.set_validators('"xyz"', "Sat, 25 Jul 2026 09:00:00 GMT")
     await store.async_save()
 
     assert store.is_new is False
@@ -144,22 +131,41 @@ async def test_cleared_validators_are_persisted(
     hass: HomeAssistant, hass_storage: dict[str, Any]
 ) -> None:
     """Setting validators back to None clears them on disk too."""
-    seed(hass_storage, ["post-1"], etag='"abc"', last_modified="stale")
+    seed_store(hass_storage, ENTRY_ID, ["post-1"], etag='"abc"', last_modified="stale")
 
     store = SeenStore(hass, ENTRY_ID)
     await store.async_load()
-    store.etag = None
-    store.last_modified = None
+    store.set_validators(None, None)
     await store.async_save()
 
     assert hass_storage[STORE_KEY]["data"]["etag"] is None
     assert hass_storage[STORE_KEY]["data"]["last_modified"] is None
 
 
+async def test_writes_report_whether_they_changed_anything(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """`add` and `set_validators` report a change, which is what forces a save.
+
+    The coordinator saves at most once per poll and only when the state really
+    moved, so both writers own the answer to "is this worth writing?".
+    """
+    seed_store(hass_storage, ENTRY_ID, ["post-1"], etag='"abc"')
+
+    store = SeenStore(hass, ENTRY_ID)
+    await store.async_load()
+
+    assert store.add(["post-1"]) is False
+    assert store.add(["post-1", "post-2"]) is True
+    assert store.set_validators('"abc"', None) is False
+    assert store.set_validators('"def"', None) is True
+    assert store.set_validators('"def"', "Sat, 25 Jul 2026 09:00:00 GMT") is True
+
+
 async def test_prune_keeps_newest_keys_on_save(
     hass: HomeAssistant, hass_storage: dict[str, Any]
 ) -> None:
-    """Saving prunes the oldest keys above the cap, in memory and on disk."""
+    """Saving keeps the newest keys up to the cap, in memory and on disk alike."""
     store = SeenStore(hass, ENTRY_ID)
     await store.async_load()
 
@@ -183,7 +189,7 @@ async def test_touch_moves_known_keys_to_the_newest_end(
     hass: HomeAssistant, hass_storage: dict[str, Any]
 ) -> None:
     """Touching a key makes it survive pruning longer; unknown keys are ignored."""
-    seed(hass_storage, ["post-1", "post-2", "post-3"])
+    seed_store(hass_storage, ENTRY_ID, ["post-1", "post-2", "post-3"])
 
     store = SeenStore(hass, ENTRY_ID)
     await store.async_load()
@@ -198,7 +204,7 @@ async def test_touching_all_keys_keeps_the_seen_set_at_its_size(
     hass: HomeAssistant, hass_storage: dict[str, Any]
 ) -> None:
     """Touching every key reorders nothing away: a touch never drops a key."""
-    seed(hass_storage, ["post-1", "post-2"])
+    seed_store(hass_storage, ENTRY_ID, ["post-1", "post-2"])
 
     store = SeenStore(hass, ENTRY_ID)
     await store.async_load()
@@ -218,7 +224,7 @@ async def test_prune_never_drops_a_key_the_feed_still_lists(
     lists, and the next poll would announce those items again - forever.
     """
     monkeypatch.setattr("custom_components.rss_notify.storage.MAX_SEEN_KEYS", 3)
-    seed(hass_storage, ["gone-1", "gone-2"])
+    seed_store(hass_storage, ENTRY_ID, ["gone-1", "gone-2"])
 
     store = SeenStore(hass, ENTRY_ID)
     await store.async_load()
@@ -230,6 +236,30 @@ async def test_prune_never_drops_a_key_the_feed_still_lists(
     # the cap is 3, yet all four listed keys survive; only dropped ones go
     assert hass_storage[STORE_KEY]["data"]["seen"] == listed
     assert all(store.contains(key) for key in listed)
+
+
+async def test_a_reload_forgets_which_keys_were_listed(
+    hass: HomeAssistant, hass_storage: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loading replaces the seen-set, so the pruning exemptions go with it.
+
+    The listed keys belong to one poll. A store instance that is loaded again
+    would otherwise keep exempting keys from a document it no longer knows,
+    letting the seen-set grow past its cap indefinitely.
+    """
+    monkeypatch.setattr("custom_components.rss_notify.storage.MAX_SEEN_KEYS", 2)
+    seed_store(hass_storage, ENTRY_ID, ["post-1", "post-2"])
+
+    store = SeenStore(hass, ENTRY_ID)
+    await store.async_load()
+    store.touch(["post-1", "post-2"])
+    await store.async_load()
+
+    store.add(["post-3"])
+    await store.async_save()
+
+    # the cap is 2 and nothing is listed any more, so the oldest key goes
+    assert hass_storage[STORE_KEY]["data"]["seen"] == ["post-2", "post-3"]
 
 
 async def test_save_at_cap_does_not_prune(
@@ -251,7 +281,7 @@ async def test_remove_deletes_file_and_state(
     hass: HomeAssistant, hass_storage: dict[str, Any]
 ) -> None:
     """Removing the store deletes the file and resets in-memory state."""
-    seed(hass_storage, ["post-1"], etag='"abc"')
+    seed_store(hass_storage, ENTRY_ID, ["post-1"], etag='"abc"')
 
     store = SeenStore(hass, ENTRY_ID)
     await store.async_load()

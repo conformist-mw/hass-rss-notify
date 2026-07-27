@@ -47,7 +47,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: RssNotifyConfigEntry) -
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
-async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def async_remove_entry(hass: HomeAssistant, entry: RssNotifyConfigEntry) -> None:
     """Delete the persisted state of a feed that is being removed."""
     await SeenStore(hass, entry.entry_id).async_remove()
 

@@ -12,6 +12,7 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlow,
 )
+from homeassistant.const import CONF_NAME, CONF_URL
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
     NumberSelector,
@@ -27,9 +28,7 @@ from .client import FeedFetchError, FeedParseError, NotModified, async_fetch_fee
 from .const import (
     CONF_INITIAL_ITEMS,
     CONF_MAX_ITEMS_PER_POLL,
-    CONF_NAME,
     CONF_UPDATE_INTERVAL,
-    CONF_URL,
     DEFAULT_INITIAL_ITEMS,
     DEFAULT_MAX_ITEMS_PER_POLL,
     DEFAULT_UPDATE_INTERVAL,
@@ -39,15 +38,6 @@ from .redact import redact_url
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_URL): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.URL)
-        ),
-        vol.Optional(CONF_NAME): TextSelector(),
-    }
-)
-
 
 def _fallback_name(url: str) -> str:
     """Return the name of a feed that reports no title and was given none.
@@ -55,16 +45,17 @@ def _fallback_name(url: str) -> str:
     Only the host of the URL is used. The name becomes the entry title, the
     device name, the entity name and the `feed_title` of every event, none of
     which are ever redacted - while a feed URL commonly carries basic-auth
-    userinfo or an access token.
+    userinfo or an access token. A hostless URL never gets this far (the
+    validation fetch rejects it), but an entry title may not be empty either.
     """
     return urlsplit(url).hostname or "RSS feed"
 
 
-def _count_field(minimum: int) -> vol.All:
+def _whole_number_field(minimum: int) -> vol.All:
     """Return a whole-number field with `minimum` enforced by the schema.
 
-    A number selector hands back a float, so the value is coerced to `int`:
-    both counts are used as list indices and the interval as whole minutes.
+    A number selector hands back a float, so the value is coerced to `int`: the
+    two counts are used as list indices and the interval as whole minutes.
     """
     return vol.All(
         NumberSelector(
@@ -74,11 +65,22 @@ def _count_field(minimum: int) -> vol.All:
     )
 
 
+# `CONF_NAME` is a form field only: the name it collects is stored as the entry
+# title, never in `entry.data`
+STEP_USER_DATA_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_URL): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.URL)
+        ),
+        vol.Optional(CONF_NAME): TextSelector(),
+    }
+)
+
 OPTIONS_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_UPDATE_INTERVAL): _count_field(1),
-        vol.Required(CONF_INITIAL_ITEMS): _count_field(0),
-        vol.Required(CONF_MAX_ITEMS_PER_POLL): _count_field(0),
+        vol.Required(CONF_UPDATE_INTERVAL): _whole_number_field(1),
+        vol.Required(CONF_INITIAL_ITEMS): _whole_number_field(0),
+        vol.Required(CONF_MAX_ITEMS_PER_POLL): _whole_number_field(0),
     }
 )
 

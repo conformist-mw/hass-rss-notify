@@ -290,7 +290,7 @@ document are refreshed on every poll and are exempt from the cap. An item that s
 the document — a pinned post, a full archive, a feed longer than 5000 items — can
 therefore never age out and be announced a second time.
 
-Two more details worth knowing:
+A few more details worth knowing:
 
 - `ETag`/`Last-Modified` are only stored when a poll leaves nothing pending. While items
   are still trickling out under `max_items_per_poll`, the stored validators are *cleared*,
@@ -307,14 +307,14 @@ Feed's three-dot menu → **Download diagnostics** reports the feed's options, t
 poll state, how many keys are in the seen-set, how many items are still pending, and
 the last fetch result. Feed URLs are masked in it — userinfo, query values and the
 fragment are replaced, in the URL, in the feed's name and inside the last error message.
+Log lines mask the URL the same way, errors and debug output alike.
 
 Two limits of that masking are worth knowing before you share a report:
 
 - a secret that lives in the URL **path** (`https://example.com/feed/<token>`) is not
   masked, because a path cannot be told apart from a credential
 - `feed_url` is part of every announced item, so it is also written to the recorder
-  database and shown as the device's link — verbatim, credentials included. The same
-  goes for debug logging, which quotes the URL as configured
+  database and shown as the device's link — verbatim, credentials included
 
 For more detail, turn on debug logging:
 

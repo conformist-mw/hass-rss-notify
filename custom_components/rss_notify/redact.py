@@ -1,9 +1,9 @@
 """Masking of feed URLs for anything that leaves the instance.
 
 A feed URL commonly carries basic-auth userinfo or an access token in its query
-string, so no URL is handed out verbatim - not in a diagnostics report, and not
-inside an error message that ends up in the log or as the entry's failure reason
-in the UI.
+string, so no URL is handed out verbatim - not in a diagnostics report, not in a
+log line (error or debug), and not inside an error message that ends up as the
+entry's failure reason in the UI.
 
 The path is *not* masked: it is what identifies the feed in a report, and a
 secret placed there (`/feed/<token>`) cannot be told apart from a normal path.
@@ -15,7 +15,10 @@ import re
 from typing import Final
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
-from homeassistant.components.diagnostics import REDACTED
+# the canonical constant: `homeassistant.components.diagnostics` states the same
+# value, but importing the component would drag `http` and `websocket_api` into
+# the feed client and the config flow, which this module also serves
+from homeassistant.helpers.redact import REDACTED
 
 # any scheme, not just http(s): an error message may quote the URL as the
 # transport saw it

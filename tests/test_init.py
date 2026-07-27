@@ -1,4 +1,8 @@
-"""Tests for the RSS Notify entry lifecycle."""
+"""Tests for setting an entry up, retrying a failed setup and unloading it.
+
+Everything a *working* entry then does - bus events, entity delivery, reload on a
+rename or an options change, removal - lives in `test_events.py`.
+"""
 
 from datetime import timedelta
 from typing import Any

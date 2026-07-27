@@ -7,9 +7,9 @@ import logging
 from typing import Any
 
 import aiohttp
-from homeassistant.components.diagnostics import REDACTED
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.redact import REDACTED
 from homeassistant.util import dt as dt_util
 import pytest
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
@@ -26,11 +26,7 @@ from custom_components.rss_notify.client import (
     to_plain_text,
 )
 
-from .conftest import FEED_URL, load_feed
-
-# a feed behind basic auth whose query string carries an access token
-SECRET_URL = "https://feeduser:s3cret@example.com/private/rss?token=t0ken"
-SECRET_PARTS = ("s3cret", "t0ken", "feeduser")
+from .conftest import FEED_URL, SECRET_PARTS, SECRET_URL, load_feed
 
 EMPTY_FEED = (
     b'<?xml version="1.0"?><rss version="2.0"><channel>'

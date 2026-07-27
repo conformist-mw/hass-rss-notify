@@ -1,4 +1,9 @@
-"""Tests for the entry lifecycle: bus events, entity delivery, reload, removal."""
+"""Tests for what a loaded entry publishes and how it survives being changed.
+
+The bus payload, the delivery to the event entity, the device the feed is grouped
+under, and the transitions that reload, pause or remove a working entry. Plain
+setup, the setup retry and unload live in `test_init.py`.
+"""
 
 from typing import Any
 
@@ -39,6 +44,7 @@ from .conftest import (
     FEED_URL,
     OTHER_FEED_TITLE,
     OTHER_FEED_URL,
+    THREE_POSTS,
     event_entity_id,
     feed_bytes,
     load_feed,
@@ -49,8 +55,6 @@ from .conftest import (
     setup_entry,
     stored,
 )
-
-THREE_POSTS = ["post-1", "post-2", "post-3"]
 
 
 async def test_bus_events_fired_per_item_in_order(
@@ -129,13 +133,15 @@ async def test_two_feeds_stay_independent(
     """One config entry per feed: events, entities and storage stay separate."""
     first = make_config_entry()
     second = make_config_entry(title=OTHER_FEED_TITLE, url=OTHER_FEED_URL)
-    aioclient_mock.get(FEED_URL, content=feed_bytes(["post-1"]))
-    aioclient_mock.get(
-        OTHER_FEED_URL, content=feed_bytes(["other-1"], title=OTHER_FEED_TITLE)
-    )
     events = async_capture_events(hass, EVENT_NEW_ITEM)
 
+    serve(aioclient_mock, content=feed_bytes(["post-1"]))
     await setup_entry(hass, first)
+    serve(
+        aioclient_mock,
+        url=OTHER_FEED_URL,
+        content=feed_bytes(["other-1"], title=OTHER_FEED_TITLE),
+    )
     await setup_entry(hass, second)
 
     assert first.entry_id != second.entry_id

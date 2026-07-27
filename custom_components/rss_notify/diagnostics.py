@@ -24,7 +24,7 @@ async def async_get_config_entry_diagnostics(
     # first poll failed is exactly the one a user downloads diagnostics for: it
     # has a coordinator, but no poll outcome to report yet
     data = coordinator.data
-    failed = not coordinator.last_update_success
+    success = coordinator.last_update_success
     return {
         "options": dict(entry.options),
         "feed": {
@@ -46,10 +46,10 @@ async def async_get_config_entry_diagnostics(
             "pending": data.pending if data else None,
         },
         "last_fetch": {
-            "success": not failed,
+            "success": success,
             "time": coordinator.last_update_success_time,
             # `last_exception` is never cleared on success, so reporting it after
             # a recovered poll would pair `success: true` with an old error
-            "error": redact_urls(str(coordinator.last_exception)) if failed else None,
+            "error": None if success else redact_urls(str(coordinator.last_exception)),
         },
     }

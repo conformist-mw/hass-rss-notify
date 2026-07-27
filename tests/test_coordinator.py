@@ -23,6 +23,8 @@ from .conftest import (
     FEED_LINK,
     FEED_TITLE,
     LAST_MODIFIED,
+    SECRET_PARTS,
+    SECRET_URL,
     feed_bytes,
     load_feed,
     make_config_entry,
@@ -338,8 +340,9 @@ async def test_not_modified_while_a_backlog_is_pending_keeps_the_backlog(
 ) -> None:
     """A 304 arriving mid-trickle changes nothing; the backlog resumes after it.
 
-    The held-back validators make a 304 unlikely, but a server answering one
-    anyway must not consume the pending items.
+    With the validators cleared, the poll asks unconditionally, so a 304 is not
+    something it invited - but a server answering one anyway must not consume the
+    pending items.
     """
     entry = make_config_entry()
     entry.add_to_hass(hass)
@@ -437,6 +440,42 @@ async def test_store_is_saved_once_per_poll_and_only_when_needed(
 
     assert emitted(coordinator) == []
     assert len(saves) == 1
+
+
+async def test_debug_logging_never_quotes_the_feed_credentials(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Every log line of a poll masks the feed URL, debug level included.
+
+    A log is pasted into a bug report as readily as a diagnostics download, and
+    the URL commonly carries basic-auth userinfo or an access token.
+    """
+    entry = make_config_entry(url=SECRET_URL, **{CONF_MAX_ITEMS_PER_POLL: 1})
+    entry.add_to_hass(hass)
+    seed_store(hass_storage, entry.entry_id, ["already-seen"])
+    # a repeated key and a capped batch, so all three per-poll lines are written
+    serve(
+        aioclient_mock,
+        url=SECRET_URL,
+        content=feed_bytes(["post-1", "post-2", "post-2"]),
+    )
+
+    coordinator = await build_coordinator(hass, entry)
+    with caplog.at_level(logging.DEBUG, logger="custom_components.rss_notify"):
+        await coordinator.async_refresh()
+
+    logged = "\n".join(
+        record.getMessage()
+        for record in caplog.records
+        if record.name.startswith("custom_components.rss_notify")
+    )
+    assert "key it uses more than once" in logged
+    assert "Clearing cache validators" in logged
+    assert "Poll of" in logged
+    assert not any(secret in logged for secret in SECRET_PARTS)
 
 
 async def test_the_entry_title_is_the_reported_feed_title(
@@ -635,7 +674,7 @@ async def test_unlimited_cap_emits_everything(
     aioclient_mock: AiohttpClientMocker,
     hass_storage: dict[str, Any],
 ) -> None:
-    """`max_items_per_poll` of 0 means no cap, so nothing is held back."""
+    """`max_items_per_poll` of 0 means no cap, so nothing stays pending."""
     entry = make_config_entry(**{CONF_MAX_ITEMS_PER_POLL: 0})
     entry.add_to_hass(hass)
     seed_store(hass_storage, entry.entry_id, ["already-seen"])
@@ -714,7 +753,7 @@ async def test_backlog_clears_the_stored_validators(
     assert "If-None-Match" not in sent_headers(aioclient_mock)
 
 
-async def test_trickle_holds_validators_across_restart(
+async def test_trickle_clears_the_validators_until_a_restart_drains_it(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
     hass_storage: dict[str, Any],
@@ -722,7 +761,7 @@ async def test_trickle_holds_validators_across_restart(
     """A capped backlog trickles out, survives a restart, then allows a 304.
 
     25 new items with a fresh ETag: 10 are emitted and the new validators are
-    held back, so the next poll re-fetches a full 200 and continues. The third
+    cleared, so the next poll re-fetches a full 200 and continues. The third
     batch is emitted by a *fresh* coordinator over the persisted store (an HA
     restart mid-trickle); only then are the validators persisted, which lets the
     following poll settle into a cheap 304.
@@ -740,7 +779,7 @@ async def test_trickle_holds_validators_across_restart(
     assert coordinator.data.pending == 15
     persisted = stored(hass_storage, entry.entry_id)
     assert persisted["seen"] == ["already-seen", *TWENTY_FIVE[:10]]
-    assert persisted["etag"] is None, "validators must be held back"
+    assert persisted["etag"] is None, "validators must be cleared, not stored"
 
     # poll 2: no validators are sent, so the server answers with a full 200
     serve_keys(aioclient_mock, TWENTY_FIVE, etag='"v1"')
