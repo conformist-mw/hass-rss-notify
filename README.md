@@ -135,7 +135,16 @@ to newest.
 
 Formatting is deliberately left to you: the payload is raw feed text, so if you send it
 with `parse_mode: markdown` or `html`, escape it in your template — an item title with a
-stray `*` or `<` is otherwise enough to break the message.
+stray `*` or `<` is otherwise enough to break the message. Two more things worth building
+into a template that shows `summary`/`summary_plain`:
+
+- **cap the length.** A feed's description is a teaser in one feed and the whole article
+  in the next, and messengers have their own limits (Telegram refuses a message over 4096
+  characters outright). `| truncate(700, False, '…')` cuts on a word boundary; truncate
+  *before* escaping, or the cut can land inside an `&amp;`.
+- **allow for there being none.** Plenty of feeds ship items with an empty description, so
+  guard the paragraph with `{%- if ... %}` instead of sending a message that trails off
+  into blank lines.
 
 ## Delivery guarantee
 
@@ -174,15 +183,30 @@ actions:
           continue_on_error: true
           response_variable: sent
           data:
-            title: "{{ trigger.event.data.feed_title }}"
+            parse_mode: html
+            # everything is built in `message`, escaped: the feed's name, the
+            # item's title and its description are publisher text, and one `<`
+            # in any of them is enough to make Telegram reject the message
             message: |-
-              {{ trigger.event.data.title }}
-              {{ trigger.event.data.link }}
+              📰 {{ trigger.event.data.feed_title | e }}
+              <b><a href="{{ trigger.event.data.link | e }}">{{ trigger.event.data.title | e }}</a></b>
+              {%- if trigger.event.data.summary_plain %}
+
+              {{ trigger.event.data.summary_plain | truncate(700, False, '…') | e }}
+              {%- endif %}
         # a false condition stops the run, so a successful send ends the loop
         - condition: template
           value_template: "{{ sent is not defined }}"
         - delay: "00:01:00"
 ```
+
+The description is what makes the message worth reading — it is the item's own summary, so
+you can tell from the notification whether the article is worth opening. `summary_plain` is
+the tag-stripped version and needs nothing but escaping; `summary` is the publisher's HTML
+and Telegram accepts only a handful of tags, so sending it raw is how a message ends up
+rejected. Take it from the **bus event** if you want the whole teaser: the same field on
+the event entity is cut to 500 characters, which is short of what a fair number of feeds
+write.
 
 ## Example automations
 
@@ -231,8 +255,13 @@ triggers:
 actions:
   - action: notify.mobile_app_my_phone
     data:
-      title: "{{ trigger.event.data.feed_title }}"
-      message: "{{ trigger.event.data.title }}"
+      # the item's title above, its own summary below: a notification you can
+      # judge the article from. No escaping here - a mobile notification is
+      # plain text
+      title: "{{ trigger.event.data.title }}"
+      message: >-
+        {{ trigger.event.data.summary_plain | truncate(300, False, '…')
+           or trigger.event.data.feed_title }}
       data:
         url: "{{ trigger.event.data.link }}"
 ```

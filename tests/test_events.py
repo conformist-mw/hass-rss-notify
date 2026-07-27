@@ -1,10 +1,13 @@
 """Tests for what a loaded entry publishes and how it survives being changed.
 
 The bus payload, the delivery to the event entity, the device the feed is grouped
-under, and the transitions that reload, pause or remove a working entry. Plain
-setup, the setup retry and unload live in `test_init.py`.
+under, the notification the README's documented template builds out of a payload,
+and the transitions that reload, pause or remove a working entry. Plain setup, the
+setup retry and unload live in `test_init.py`.
 """
 
+from pathlib import Path
+import re
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntryDisabler, ConfigEntryState
@@ -16,10 +19,13 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers.template import Template
+import pytest
 from pytest_homeassistant_custom_component.common import (
     async_capture_events,
 )
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+import yaml
 
 from custom_components.rss_notify.const import (
     ATTR_ENTRY_ID,
@@ -353,3 +359,95 @@ async def test_removing_the_entry_deletes_the_stored_state(
 
     assert storage_key(entry.entry_id) not in hass_storage
     assert hass.states.async_entity_ids(Platform.EVENT) == []
+
+
+def _readme_telegram_message() -> str:
+    """Return the message template of the README's Telegram example.
+
+    Read out of the README instead of transcribed here: this guards the
+    documented example against losing the item's own description again, and a
+    copy kept in the test file would keep passing while the README drifted.
+    """
+    readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    examples = [
+        yaml.safe_load(block)
+        for block in re.findall(r"```yaml\n(.*?)```", readme, re.DOTALL)
+        if "RSS to Telegram" in block
+    ]
+    assert len(examples) == 1, "the README's Telegram example moved or was duplicated"
+    send = examples[0]["actions"][0]["repeat"]["sequence"][0]
+    assert send["action"] == "telegram_bot.send_message"
+    return send["data"]["message"]
+
+
+def _render(hass: HomeAssistant, payload: dict[str, Any]) -> str:
+    """Render the documented Telegram template against one event payload."""
+    return Template(_readme_telegram_message(), hass).async_render(
+        {"trigger": {"event": {"data": payload}}}, parse_result=False
+    )
+
+
+async def test_the_documented_telegram_message_carries_the_item_preview(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """The README's Telegram template renders the feed, the item and its summary.
+
+    The preview is the point of the notification - it is what tells you whether
+    the article is worth opening - so the whole message is pinned, blank line
+    included, rather than only checking that the description appears somewhere.
+    """
+    entry = make_config_entry()
+    seed_store(hass_storage, entry.entry_id, ["already-seen"])
+    serve_keys(aioclient_mock, ["post-1"])
+    events = async_capture_events(hass, EVENT_NEW_ITEM)
+
+    await setup_entry(hass, entry)
+
+    assert _render(hass, events[0].data) == (
+        f"📰 {FEED_TITLE}\n"
+        '<b><a href="https://example.com/posts/post-1">Post post-1</a></b>\n'
+        "\n"
+        "Body of post-1"
+    )
+
+
+# a feed that publishes whole articles rather than teasers; the cut has to land
+# on a word boundary, so the tail is what must be gone
+LONG_SUMMARY = " ".join(f"sentence-{index}" for index in range(120))
+
+
+@pytest.mark.parametrize(
+    ("summary_plain", "expected", "unexpected"),
+    [
+        # an item without any description must not trail off into blank lines
+        ("", "</b>", "\n\n"),
+        # publisher text carrying markup characters has to arrive escaped, or
+        # Telegram rejects the message whole
+        ("Cost 5 < 6 & rising", "Cost 5 &lt; 6 &amp; rising", "5 < 6 &"),
+        (LONG_SUMMARY, "…", LONG_SUMMARY[-40:]),
+    ],
+    ids=["no description", "markup characters", "the whole article"],
+)
+async def test_the_documented_telegram_message_survives_awkward_descriptions(
+    hass: HomeAssistant,
+    summary_plain: str,
+    expected: str,
+    unexpected: str,
+) -> None:
+    """The documented template copes with an empty, a hostile and a huge summary."""
+    message = _render(
+        hass,
+        {
+            ATTR_FEED_TITLE: FEED_TITLE,
+            ATTR_TITLE: "Post post-1",
+            ATTR_LINK: "https://example.com/posts/post-1",
+            ATTR_SUMMARY_PLAIN: summary_plain,
+        },
+    )
+
+    assert message.endswith(expected)
+    assert unexpected not in message
+    # Telegram refuses a message over 4096 characters outright
+    assert len(message) < 1000
