@@ -9,3 +9,6 @@ htmlcov/
 *.egg-info/
 dist/
 build/
+
+# local development notes, never published
+docs/
