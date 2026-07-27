@@ -369,3 +369,7 @@ branch:
 ```shell
 .venv/bin/pytest --cov=custom_components/rss_notify --cov-branch --cov-report=term-missing
 ```
+
+## License
+
+MIT — the full text is in [`LICENSE`](LICENSE).

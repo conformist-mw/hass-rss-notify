@@ -55,6 +55,16 @@ def test_hacs_requires_a_home_assistant_minor_release() -> None:
     assert minimum in (REPO_ROOT / "README.md").read_text()
 
 
+def test_the_declared_license_matches_the_license_file() -> None:
+    """`pyproject.toml`'s SPDX identifier and the file it points at agree."""
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    declared = pyproject["project"]
+
+    assert declared["license"] == "MIT"
+    assert declared["license-files"] == ["LICENSE"]
+    assert (REPO_ROOT / "LICENSE").read_text().startswith("MIT License")
+
+
 def test_the_english_translations_match_the_strings_file() -> None:
     """`strings.json` and `translations/en.json` are byte-identical.
 
