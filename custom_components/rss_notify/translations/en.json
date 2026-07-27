@@ -3,14 +3,22 @@
     "step": {
       "user": {
         "title": "Add feed",
-        "description": "Enter the URL of an RSS or Atom feed.",
+        "description": "Enter the URL of an RSS or Atom feed. It is fetched once so its name can be filled in for you.",
         "data": {
-          "url": "URL",
+          "url": "URL"
+        },
+        "data_description": {
+          "url": "The address of the RSS or Atom feed to watch."
+        }
+      },
+      "name": {
+        "title": "Name the feed",
+        "description": "The feed was fetched and parsed. Items found: {item_count}.",
+        "data": {
           "name": "Name"
         },
         "data_description": {
-          "url": "The address of the RSS or Atom feed to watch.",
-          "name": "Optional. Defaults to the title reported by the feed, or to the host of the URL when the feed reports none."
+          "name": "Pre-filled with the title the feed reports, or with the host of the URL when it reports none. Edit it to taste; clearing it keeps the suggestion. This becomes the name of the feed everywhere: the entry, the device, the entity and the feed title in every event. You can rename it later in the UI."
         }
       }
     },

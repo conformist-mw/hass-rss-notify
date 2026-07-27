@@ -1,6 +1,6 @@
 [project]
 name = "hass-rss-notify"
-version = "0.1.0"
+version = "0.2.0"
 description = "Home Assistant integration that fires events for new RSS/Atom feed items"
 requires-python = ">=3.14"
 license = "MIT"

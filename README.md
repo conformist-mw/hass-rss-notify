@@ -62,10 +62,15 @@ restart Home Assistant.
 
 **Settings → Devices & services → Add integration → RSS Notify**
 
-| Field | Meaning |
-| --- | --- |
-| URL | The feed address. It is fetched and parsed right away, so a typo or a page that is not a feed is rejected in the dialog. |
-| Name | Optional. Defaults to the title the feed reports; its host is used if it reports none. It can be changed later by renaming the feed. |
+The dialog has two steps:
+
+| Step | Field | Meaning |
+| --- | --- | --- |
+| 1 | URL | The feed address. It is fetched and parsed right away, so a typo or a page that is not a feed is rejected in the dialog. |
+| 2 | Name | Pre-filled with the title that fetch found in the feed — its host if the feed reports none. Edit it or accept it; clearing it keeps the suggestion. It can be changed later by renaming the feed. |
+
+The name is asked for after the URL because that is what lets it be filled in for you: the
+title belongs to the feed document, so it is only known once the feed has been fetched.
 
 The URL is the entry's unique id, so the same feed cannot be added twice, and it cannot be
 changed afterwards — see [Managing feeds](#managing-feeds).
@@ -114,7 +119,7 @@ guard.
 | --- | --- |
 | `entry_id` | Config entry id of the feed, handy to filter one feed out of many |
 | `feed_url` | Feed address |
-| `feed_title` | The feed's name in Home Assistant: your name if you gave one, the feed's own title otherwise (its host if the feed reports no title). It is the name shown in the UI, so renaming the feed there changes it too; a rename by the *publisher* never does |
+| `feed_title` | The feed's name in Home Assistant: the name confirmed when the feed was added — the feed's own title unless you edited it (its host if the feed reports no title). It is the name shown in the UI, so renaming the feed there changes it too; a rename by the *publisher* never does |
 | `item_id` | The dedup key of the item (its GUID, or its link, or a content hash) |
 | `title` | Item title |
 | `link` | Item link |

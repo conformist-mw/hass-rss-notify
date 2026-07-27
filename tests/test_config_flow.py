@@ -26,7 +26,15 @@ from custom_components.rss_notify.const import (
     DOMAIN,
 )
 
-from .conftest import DEFAULT_OPTIONS, FEED_URL, load_feed, serve_keys, setup_entry
+from .conftest import (
+    DEFAULT_OPTIONS,
+    FEED_URL,
+    SECRET_PARTS,
+    SECRET_URL,
+    load_feed,
+    serve_keys,
+    setup_entry,
+)
 
 UNTITLED_FEED = (
     b'<?xml version="1.0"?><rss version="2.0"><channel>'
@@ -63,14 +71,27 @@ def suggested_values(schema: vol.Schema) -> dict[str, Any]:
 
 
 async def _start_flow(hass: HomeAssistant) -> str:
-    """Start the user flow and return its id, asserting the form is shown."""
+    """Start the user flow and return its id, asserting the URL form is shown."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert not result["errors"]
+    # the URL step asks for nothing else: the name to propose is the feed's own
+    # title, which is unknown until the feed has been fetched
+    assert list(result["data_schema"].schema) == [CONF_URL]
     return result["flow_id"]
+
+
+async def _submit_url(
+    hass: HomeAssistant, flow_id: str, url: str = FEED_URL
+) -> dict[str, Any]:
+    """Submit `url` and return the name form it leads to."""
+    result = await hass.config_entries.flow.async_configure(flow_id, {CONF_URL: url})
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "name"
+    return result
 
 
 async def test_user_flow_creates_entry(
@@ -78,12 +99,18 @@ async def test_user_flow_creates_entry(
     aioclient_mock: AiohttpClientMocker,
     mock_setup_entry: AsyncMock,
 ) -> None:
-    """A valid feed creates an entry titled after the feed, with default options."""
+    """The name step offers the feed's own title, and accepting it creates the entry."""
     aioclient_mock.get(FEED_URL, content=load_feed("feed_basic"))
     flow_id = await _start_flow(hass)
 
+    form = await _submit_url(hass, flow_id, f"  {FEED_URL}  ")
+
+    # this is the point of the second step: the name arrives filled in
+    assert suggested_values(form["data_schema"]) == {CONF_NAME: "Example Blog"}
+    assert form["description_placeholders"] == {"item_count": "3"}
+
     result = await hass.config_entries.flow.async_configure(
-        flow_id, {CONF_URL: f"  {FEED_URL}  "}
+        flow_id, {CONF_NAME: "Example Blog"}
     )
     await hass.async_block_till_done()
 
@@ -99,16 +126,38 @@ async def test_user_flow_creates_entry(
 async def test_user_flow_custom_name_wins(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    """A name entered by the user overrides the feed title."""
+    """A name the user edits into the field overrides the feed title."""
     aioclient_mock.get(FEED_URL, content=load_feed("feed_basic"))
     flow_id = await _start_flow(hass)
+    await _submit_url(hass, flow_id)
 
     result = await hass.config_entries.flow.async_configure(
-        flow_id, {CONF_URL: FEED_URL, CONF_NAME: "  My feed  "}
+        flow_id, {CONF_NAME: "  My feed  "}
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "My feed"
+
+
+@pytest.mark.parametrize("submitted", [{}, {CONF_NAME: "   "}])
+async def test_a_cleared_name_keeps_the_suggestion(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    submitted: dict[str, str],
+) -> None:
+    """Clearing the pre-filled name falls back to it instead of failing the form.
+
+    The field is optional for exactly this reason: an entry title may not be
+    empty, and a required field would answer an emptied one with a form error.
+    """
+    aioclient_mock.get(FEED_URL, content=load_feed("feed_basic"))
+    flow_id = await _start_flow(hass)
+    await _submit_url(hass, flow_id)
+
+    result = await hass.config_entries.flow.async_configure(flow_id, submitted)
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Example Blog"
 
 
 @pytest.mark.parametrize(
@@ -129,11 +178,15 @@ async def test_user_flow_falls_back_to_the_feed_host_as_title(
     url: str,
     expected_title: str,
 ) -> None:
-    """A feed without a title and without a name is named after its host."""
+    """A feed reporting no title is proposed under its host, not under its URL."""
     aioclient_mock.get(url, content=UNTITLED_FEED)
     flow_id = await _start_flow(hass)
 
-    result = await hass.config_entries.flow.async_configure(flow_id, {CONF_URL: url})
+    form = await _submit_url(hass, flow_id, url)
+
+    assert suggested_values(form["data_schema"]) == {CONF_NAME: expected_title}
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == expected_title
@@ -197,9 +250,8 @@ async def test_flow_errors_recover(
     aioclient_mock.clear_requests()
     aioclient_mock.get(FEED_URL, content=load_feed("feed_basic"))
 
-    result = await hass.config_entries.flow.async_configure(
-        flow_id, {CONF_URL: FEED_URL}
-    )
+    await _submit_url(hass, flow_id)
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Example Blog"
@@ -237,6 +289,32 @@ async def test_a_malformed_url_is_a_form_error_not_a_crash(
     assert result["errors"] == {"base": "cannot_connect"}
     assert not aioclient_mock.mock_calls
     assert "s3cret" not in caplog.text
+
+
+async def test_the_name_step_quotes_no_part_of_the_url(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Nothing the name step renders carries a part of the feed URL.
+
+    The step's description and its pre-filled name are shown in the UI, and a
+    feed URL commonly carries basic-auth userinfo or an access token. Only the
+    item count is passed through as a placeholder, and the name falls back to the
+    host alone.
+    """
+    aioclient_mock.get(SECRET_URL, content=UNTITLED_FEED)
+    flow_id = await _start_flow(hass)
+
+    form = await _submit_url(hass, flow_id, SECRET_URL)
+
+    assert form["description_placeholders"] == {"item_count": "1"}
+    rendered = "".join(
+        str(part)
+        for part in (
+            form["description_placeholders"],
+            suggested_values(form["data_schema"]),
+        )
+    )
+    assert not any(part in rendered for part in SECRET_PARTS)
 
 
 async def test_unexpected_not_modified_is_invalid_feed(hass: HomeAssistant) -> None:

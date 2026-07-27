@@ -24,7 +24,13 @@ from homeassistant.helpers.selector import (
 )
 import voluptuous as vol
 
-from .client import FeedFetchError, FeedParseError, NotModified, async_fetch_feed
+from .client import (
+    FeedFetchError,
+    FeedParseError,
+    FetchResult,
+    NotModified,
+    async_fetch_feed,
+)
 from .const import (
     CONF_INITIAL_ITEMS,
     CONF_MAX_ITEMS_PER_POLL,
@@ -40,7 +46,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _fallback_name(url: str) -> str:
-    """Return the name of a feed that reports no title and was given none.
+    """Return the name proposed for a feed that reports no title of its own.
 
     Only the host of the URL is used. The name becomes the entry title, the
     device name, the entity name and the `feed_title` of every event, none of
@@ -75,16 +81,18 @@ def _whole_number_field(minimum: int) -> vol.All:
     )
 
 
-# `CONF_NAME` is a form field only: the name it collects is stored as the entry
-# title, never in `entry.data`
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_URL): TextSelector(
             TextSelectorConfig(type=TextSelectorType.URL)
         ),
-        vol.Optional(CONF_NAME): TextSelector(),
     }
 )
+
+# `CONF_NAME` is a form field only: the name it collects is stored as the entry
+# title, never in `entry.data`. It is optional so that clearing the pre-filled
+# suggestion falls back to it rather than failing the form.
+STEP_NAME_DATA_SCHEMA = vol.Schema({vol.Optional(CONF_NAME): TextSelector()})
 
 OPTIONS_SCHEMA = vol.Schema(
     {
@@ -100,6 +108,12 @@ class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def __init__(self) -> None:
+        """Set up the state the URL step hands to the name step."""
+        self._url = ""
+        self._suggested_name = ""
+        self._item_count = 0
+
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> RssNotifyOptionsFlow:
@@ -109,7 +123,12 @@ class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Add one feed, validating it by fetching and parsing it once."""
+        """Ask for the feed URL and validate it by fetching and parsing it once.
+
+        Only the URL: the name cannot be asked for here, because the name to
+        propose is the feed's own title and that is not known until the feed has
+        been fetched. Naming happens in the next step, pre-filled.
+        """
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -118,7 +137,7 @@ class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
 
             try:
-                feed_title = await self._async_validate_feed(url)
+                result = await self._async_validate_feed(url)
             except FeedFetchError as err:
                 _LOGGER.debug("Cannot connect to feed %s: %s", redact_url(url), err)
                 errors["base"] = "cannot_connect"
@@ -126,23 +145,10 @@ class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.debug("Feed %s is not usable: %s", redact_url(url), err)
                 errors["base"] = "invalid_feed"
             else:
-                name = (
-                    (user_input.get(CONF_NAME) or "").strip()
-                    or feed_title
-                    or _fallback_name(url)
-                )
-                # the name lives in the entry title only: HA keeps that in step
-                # with a rename in the UI, and the coordinator reads it from
-                # there, so the two can never drift apart
-                return self.async_create_entry(
-                    title=name,
-                    data={CONF_URL: url},
-                    options={
-                        CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
-                        CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
-                        CONF_MAX_ITEMS_PER_POLL: DEFAULT_MAX_ITEMS_PER_POLL,
-                    },
-                )
+                self._url = url
+                self._suggested_name = result.feed_title or _fallback_name(url)
+                self._item_count = len(result.items)
+                return await self.async_step_name()
 
         return self.async_show_form(
             step_id="user",
@@ -152,15 +158,44 @@ class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def _async_validate_feed(self, url: str) -> str:
-        """Return the title of the feed at `url`, raising when it is unusable."""
+    async def async_step_name(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Name the validated feed, offering the feed's own title as the value."""
+        if user_input is not None:
+            name = (user_input.get(CONF_NAME) or "").strip() or self._suggested_name
+            # the name lives in the entry title only: HA keeps that in step with
+            # a rename in the UI, and the coordinator reads it from there, so the
+            # two can never drift apart
+            return self.async_create_entry(
+                title=name,
+                data={CONF_URL: self._url},
+                options={
+                    CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
+                    CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
+                    CONF_MAX_ITEMS_PER_POLL: DEFAULT_MAX_ITEMS_PER_POLL,
+                },
+            )
+
+        return self.async_show_form(
+            step_id="name",
+            data_schema=self.add_suggested_values_to_schema(
+                STEP_NAME_DATA_SCHEMA, {CONF_NAME: self._suggested_name}
+            ),
+            # no URL among them: the step's text is rendered in the UI, and a feed
+            # URL commonly carries userinfo or an access token
+            description_placeholders={"item_count": str(self._item_count)},
+        )
+
+    async def _async_validate_feed(self, url: str) -> FetchResult:
+        """Return the parsed feed at `url`, raising when it is unusable."""
         result = await async_fetch_feed(self.hass, url)
         if isinstance(result, NotModified):
             # unreachable in practice: the flow never sends cache validators
             raise FeedParseError(
                 f"Unexpected 'not modified' response from {redact_url(url)}"
             )
-        return result.feed_title
+        return result
 
 
 class RssNotifyOptionsFlow(OptionsFlow):
