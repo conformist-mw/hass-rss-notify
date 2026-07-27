@@ -1,13 +1,18 @@
 """Tests for the feed client: fetch, conditional GET, parse and normalize."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 import hashlib
 from http import HTTPStatus
 import logging
+from pathlib import Path
 import traceback
 from typing import Any
 
 import aiohttp
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.redact import REDACTED
@@ -29,7 +34,7 @@ from custom_components.rss_notify.client import (
     to_plain_text,
 )
 
-from .conftest import FEED_URL, SECRET_PARTS, SECRET_URL, load_feed
+from .conftest import FEED_LINK, FEED_URL, SECRET_PARTS, SECRET_URL, load_feed
 
 EMPTY_FEED = (
     b'<?xml version="1.0"?><rss version="2.0"><channel>'
@@ -59,6 +64,59 @@ BOZO_FEED = (
     b"<guid>bozo-1</guid></item>"
     b"</channel></rss>"
 )
+
+# a full-content feed of a routine size for a WordPress or Atom blog: over a
+# megabyte, and far more than one buffered socket read
+LARGE_FEED_ITEMS = 2000
+
+
+def large_feed(items: int = LARGE_FEED_ITEMS) -> bytes:
+    """Return a valid RSS document holding `items` items with sizeable bodies."""
+    body = "".join(
+        f"<item><title>Post {index}</title><guid>large-{index}</guid>"
+        f"<description>{'padding ' * 60}</description></item>"
+        for index in range(items)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>'
+        f"<title>Large Blog</title><link>{FEED_LINK}</link>{body}"
+        "</channel></rss>"
+    ).encode()
+
+
+@asynccontextmanager
+async def real_server(body: bytes) -> AsyncIterator[TestServer]:
+    """Serve `body` from a genuine aiohttp server, whole and chunk by chunk.
+
+    `aioclient_mock` feeds the entire body into the stream reader and marks it
+    EOF before the client reads, so through the mocker one `read()` always
+    returns everything - the truncation a real socket produces is invisible to
+    it. These tests therefore talk to a real server: `/whole` answers with a
+    plain response, `/chunked` writes the body out in 4 KiB pieces.
+    """
+
+    async def whole(request: web.Request) -> web.StreamResponse:
+        """Answer with the body in one `Response`."""
+        return web.Response(body=body, content_type="application/rss+xml")
+
+    async def chunked(request: web.Request) -> web.StreamResponse:
+        """Answer with the body written out in small pieces."""
+        response = web.StreamResponse()
+        await response.prepare(request)
+        for start in range(0, len(body), 4096):
+            await response.write(body[start : start + 4096])
+        await response.write_eof()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/whole", whole)
+    app.router.add_get("/chunked", chunked)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        yield server
+    finally:
+        await server.close()
 
 
 async def test_fetch_and_parse_basic(
@@ -282,6 +340,104 @@ async def test_oversized_body_is_refused(
 
     with pytest.raises(FeedFetchError, match="larger than the 64 byte limit"):
         await async_fetch_feed(hass, FEED_URL)
+
+
+@pytest.mark.parametrize("path", ["/whole", "/chunked"])
+async def test_a_large_feed_is_read_whole(
+    hass: HomeAssistant, socket_enabled: None, path: str
+) -> None:
+    """A feed over a megabyte arrives complete, from a genuine socket.
+
+    This is the one thing `aioclient_mock` cannot show: it buffers the whole body
+    into the stream reader and marks EOF before the client reads, so a single
+    `read(n)` returns everything. A real `StreamReader` only waits for its buffer
+    to be non-empty, so `read(MAX_FEED_BYTES + 1)` returned about 48 KiB of this
+    document (200-odd of its 2000 items) and feedparser announced the truncated
+    list as if it were the whole feed - the boundary item with an empty body,
+    marked seen forever. Hence the real server here.
+    """
+    payload = large_feed()
+    assert len(payload) > 1_000_000, "the body must exceed one buffered read"
+
+    async with real_server(payload) as server:
+        result = await async_fetch_feed(hass, str(server.make_url(path)))
+
+    assert isinstance(result, FetchResult)
+    assert len(result.items) == LARGE_FEED_ITEMS
+    assert result.items[-1].summary != ""
+    assert result.items[-1].key == f"large-{LARGE_FEED_ITEMS - 1}"
+
+
+async def test_oversized_body_is_refused_by_a_real_server(
+    hass: HomeAssistant, socket_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The size cap fires against a real, chunk-by-chunk response.
+
+    The mocker cannot prove this either: it hands the body over in one piece, so
+    a cap check that only ever sees the first buffered read passes there while
+    being unreachable in production. Against a real socket the pre-fix client
+    read 100 KiB of this body and accepted it.
+    """
+    monkeypatch.setattr(
+        "custom_components.rss_notify.client.MAX_FEED_BYTES", 100 * 1024
+    )
+
+    async with real_server(large_feed()) as server:
+        with pytest.raises(FeedFetchError, match="larger than the 102400 byte limit"):
+            await async_fetch_feed(hass, str(server.make_url("/chunked")))
+
+
+async def test_a_body_naming_a_local_file_is_not_opened(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """A response body that is a filesystem path must not be read as one.
+
+    `feedparser.parse` falls through to `open(argument, "rb")` for an argument
+    that is neither readable nor a URL, and `bytes` reaches that branch - so a
+    hostile or MITM'd feed answering with a path would have Home Assistant
+    announce the items of a local XML file. The payload is handed over as a
+    stream, which takes feedparser's first branch instead.
+    """
+    local = tmp_path / "local.xml"
+    local.write_bytes(
+        b'<?xml version="1.0"?><rss version="2.0"><channel>'
+        b"<title>LOCAL SECRET</title><link>https://local.example.com/</link>"
+        b"<item><title>Local item</title><guid>local-1</guid></item>"
+        b"</channel></rss>"
+    )
+
+    with pytest.raises(FeedParseError, match="Unable to parse feed"):
+        await async_parse_feed(hass, str(local).encode(), FEED_URL)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # the protocol-relative form sites embed in <link href>: aiohttp's
+        # connector raises a bare AssertionError for it, which `ClientError`
+        # does not catch, so it used to escape the config flow unhandled
+        "//feeduser:s3cret@example.com/rss",
+        "//example.com/rss",
+        # opaque URLs: the text scrubber cannot mask every one of them, so they
+        # must not reach the transport, whose own message quotes them verbatim
+        "mailto:s3cret@example.com",
+        "data:text/plain,s3cret",
+        "urn:s3cret",
+        "ftp://feeduser:s3cret@example.com/rss",
+        "feed://example.com/rss?token=s3cret",
+        # unparsable: an unterminated IPv6 literal
+        "http://[::1",
+    ],
+)
+async def test_a_url_that_is_not_http_is_refused_before_the_fetch(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, url: str
+) -> None:
+    """A non-http(s) URL is a FeedFetchError, quotes no secret and hits no socket."""
+    with pytest.raises(FeedFetchError, match="not an http or https address") as raised:
+        await async_fetch_feed(hass, url)
+
+    assert "s3cret" not in str(raised.value)
+    assert aioclient_mock.call_count == 0
 
 
 @pytest.mark.parametrize(

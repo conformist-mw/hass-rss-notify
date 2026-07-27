@@ -34,7 +34,7 @@
         "data_description": {
           "update_interval": "How often the feed is polled.",
           "initial_items": "How many of the newest items to announce when the feed is first added. 0 announces nothing. Not limited by the maximum items per poll.",
-          "max_items_per_poll": "Maximum number of items announced per regular poll. Remaining items are announced on later polls. 0 means unlimited. The first poll after adding a feed ignores this and announces the initial items."
+          "max_items_per_poll": "Maximum number of items announced per regular poll. Remaining items are announced on later polls, but they are not queued: an item that drops out of the feed before a later poll reaches it is never announced. 0 means unlimited. The first poll after adding a feed ignores this and announces the initial items."
         }
       }
     }

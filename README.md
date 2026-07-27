@@ -101,11 +101,14 @@ Two surfaces carry the same payload, pick whichever suits the automation:
   attributes plus `event_type: new_item`, with `summary` and `summary_plain` cut to 500
   characters so the recorder does not keep a copy of every article
 
-An event entity holds the *last* event it fired, and Home Assistant does not restore that
-across a restart: right after a restart the entity reads `unknown` with no attributes
-until the feed publishes something. That is why the entity example below excludes
-`unknown` and `unavailable` in `not_from`/`not_to` — without it, a restart or a failed
-poll would trigger the automation with no item to send.
+An event entity holds the *last* event it fired, and Home Assistant **restores** that
+across a restart: right after a restart the entity is back with the timestamp and the
+attributes of the item it announced before, and writing that restored state counts as a
+state change with no previous state. A state trigger therefore fires once per restart,
+carrying an item that was already announced — and `not_from`/`not_to` do not filter it,
+because "no previous state" is not `unknown`. The entity example below rules it out with a
+`trigger.from_state is not none` condition; the bus event is not affected and needs no
+guard.
 
 | Field | Description |
 | --- | --- |
@@ -140,7 +143,10 @@ is *not* announced again. What the integration does guarantee:
 
 - a crash or restart *between* firing the event and persisting the seen-set re-announces
   the item rather than swallowing it
-- restarting Home Assistant never replays items that were already announced
+- restarting Home Assistant never re-fires the bus event for an item that was already
+  announced. Home Assistant does restore the *entity's* last event, so an automation
+  triggering on the entity needs the `trigger.from_state is not none` condition of the
+  example below to ignore that one state change
 - an unreachable or broken feed leaves the seen-set untouched; the entity goes
   unavailable and the next successful poll continues where it left off
 
@@ -178,7 +184,9 @@ actions:
 ### Event entity → persistent notification
 
 The UI-friendly variant: pick the feed's entity as the trigger, no event type to type
-out.
+out. Two guards are needed and both matter — `not_to` keeps a failed poll (which turns the
+entity `unavailable`) from triggering with no item, and the condition drops the state
+change a restart produces when Home Assistant restores the entity's last event.
 
 ```yaml
 alias: RSS to notification drawer
@@ -187,12 +195,15 @@ max: 50
 triggers:
   - trigger: state
     entity_id: event.example_blog_new_item
-    not_from:
-      - unknown
-      - unavailable
     not_to:
       - unknown
       - unavailable
+conditions:
+  # a restart re-adds the entity carrying the item it last announced, and that
+  # state change has no previous state at all - unlike a real new item, which
+  # always follows one (`unknown` on a fresh feed, `unavailable` after a failure)
+  - condition: template
+    value_template: "{{ trigger.from_state is not none }}"
 actions:
   - action: persistent_notification.create
     data:
@@ -305,14 +316,20 @@ A few more details worth knowing:
   feed publishing more than `max_items_per_poll` items per interval *and* a short window,
   so if you follow such a feed, raise the cap or shorten `update_interval`.
 - every request is bounded by a fixed 30 second timeout and a 16 MiB response limit;
-  neither is configurable.
+  neither is configurable. The body is read in 64 KiB pieces and the limit is applied to
+  the running total, so a feed larger than it is refused outright rather than truncated,
+  and an oversized response is never buffered whole.
+- the feed URL has to be an `http://` or `https://` address. Anything else — a
+  protocol-relative `//host/feed.xml`, a `feed://` or `ftp://` scheme, a bare hostname — is
+  rejected when the feed is added, with "Failed to connect to the feed URL".
 
 ## Troubleshooting
 
 Feed's three-dot menu → **Download diagnostics** reports the feed's options, title,
 poll state, how many keys are in the seen-set, how many items are still pending, and
-the last fetch result. Feed URLs are masked in it — userinfo, query values and the
-fragment are replaced, in the URL, in the feed's name and inside the last error message.
+the last fetch result. Feed URLs are masked in it — userinfo is replaced, the query string
+is replaced *whole* (keys included, because a token is as often a bare key as a value) and
+the fragment is dropped, in the URL, in the feed's name and inside the last error message.
 Log lines mask the URL the same way, errors and debug output alike.
 
 Two limits of that masking are worth knowing before you share a report:

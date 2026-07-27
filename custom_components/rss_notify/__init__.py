@@ -38,8 +38,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: RssNotifyConfigEntry) ->
         await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
         raise
 
+    # Polling is bound to the *entry*, not to the entity. A
+    # `DataUpdateCoordinator` only schedules a refresh while it has at least one
+    # listener, and the event entity is the only one that registers itself - via
+    # `CoordinatorEntity.async_added_to_hass`, which never runs for an entity
+    # disabled in the registry. Without this keep-alive such a feed performs its
+    # initial sync and is then never polled again, silently taking the
+    # `rss_notify_new_item` bus surface down with it - and disabling the entity to
+    # keep the recorder clean is something the README invites.
+    entry.async_on_unload(coordinator.async_add_listener(_async_keep_polling))
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True
+
+
+@callback
+def _async_keep_polling() -> None:
+    """Do nothing: this listener exists only to keep the refresh timer alive."""
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: RssNotifyConfigEntry) -> bool:

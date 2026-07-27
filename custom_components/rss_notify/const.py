@@ -20,6 +20,8 @@ DEFAULT_MAX_ITEMS_PER_POLL: Final = 10  # 0 = unlimited
 
 # Fetching (both fixed, not exposed as options)
 FETCH_TIMEOUT: Final = 30  # seconds
+# checked against the running total of a chunked read, so an oversized body is
+# refused rather than truncated and is never buffered whole
 MAX_FEED_BYTES: Final = 16 * 1024 * 1024  # a feed document larger than this is refused
 
 # Persistent seen-store

@@ -9,10 +9,12 @@ from datetime import datetime
 import hashlib
 import html
 from http import HTTPStatus
+import io
 import logging
 import re
 from time import struct_time
 from typing import Any, Final
+from urllib.parse import urlsplit
 
 import aiohttp
 import feedparser
@@ -26,6 +28,14 @@ from .redact import redact_url, redact_urls
 _LOGGER = logging.getLogger(__name__)
 
 USER_AGENT: Final = "HomeAssistant-rss_notify"
+
+# the only schemes aiohttp can request; anything else is refused before the fetch
+# so the transport never sees - and never quotes back - a URL shape it cannot use
+HTTP_SCHEMES: Final = frozenset({"http", "https"})
+
+# how much of the body is taken per read; the cap is enforced on the running
+# total, so at most one chunk beyond `MAX_FEED_BYTES` is ever held in memory
+_READ_CHUNK_BYTES: Final = 64 * 1024
 
 _TAG_RE: Final = re.compile(r"<[^>]+>")
 _WHITESPACE_RE: Final = re.compile(r"\s+")
@@ -89,6 +99,17 @@ async def async_fetch_feed(
     payload is not a usable feed. Error messages carry the *redacted* URL: they
     are logged and shown in the UI as the failure reason of the entry.
     """
+    if not _is_http_url(url):
+        # aiohttp answers a non-http(s) URL inconsistently - `ClientError` for
+        # `ftp://`, a bare `AssertionError` from the connector for the
+        # protocol-relative `//host/path` that sites embed in <link href> - and
+        # an `AssertionError` would escape the config flow as an unknown error
+        # instead of a form error. Refusing here also keeps an opaque URL
+        # (`mailto:`, `data:`, `urn:`) out of the transport's own message.
+        raise FeedFetchError(
+            f"Feed URL {redact_url(url)} is not an http or https address"
+        )
+
     headers = {"User-Agent": USER_AGENT}
     if etag:
         headers["If-None-Match"] = etag
@@ -103,9 +124,7 @@ async def async_fetch_feed(
                 _LOGGER.debug("Feed %s not modified", redact_url(url))
                 return NotModified()
             response.raise_for_status()
-            # a hostile or misconfigured URL must not buffer an unbounded body
-            # into memory: one byte over the cap is enough to reject it
-            payload = await response.content.read(MAX_FEED_BYTES + 1)
+            payload = await _async_read_capped(response, url)
             new_etag = response.headers.get("ETag")
             new_last_modified = response.headers.get("Last-Modified")
     # `from None` on both: the transport exception quotes the raw URL in its own
@@ -121,14 +140,42 @@ async def async_fetch_feed(
             redact_urls(f"Error fetching feed from {url}: {err}")
         ) from None
 
-    if len(payload) > MAX_FEED_BYTES:
-        raise FeedFetchError(
-            f"Feed at {redact_url(url)} is larger than the {MAX_FEED_BYTES} byte limit"
-        )
-
     return await async_parse_feed(
         hass, payload, url=url, etag=new_etag, last_modified=new_last_modified
     )
+
+
+def _is_http_url(url: str) -> bool:
+    """Return whether `url` is an absolute http(s) address."""
+    try:
+        return urlsplit(url).scheme in HTTP_SCHEMES
+    except ValueError:
+        # an unparsable URL (an unterminated IPv6 literal, say) is not one either
+        return False
+
+
+async def _async_read_capped(response: aiohttp.ClientResponse, url: str) -> bytes:
+    """Return the whole response body, refusing one that passes the size cap.
+
+    The body has to be accumulated chunk by chunk: `StreamReader.read(n)` returns
+    as soon as the buffer holds anything at all rather than reading until `n`
+    bytes or EOF, so a single `read(MAX_FEED_BYTES + 1)` truncates every feed
+    bigger than one buffered read - silently, since feedparser recovers from a
+    document cut mid-`<item>` and yields the entries it got. The cap is checked
+    against the running total, so a hostile body is still refused without ever
+    being buffered whole.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.content.iter_chunked(_READ_CHUNK_BYTES):
+        total += len(chunk)
+        if total > MAX_FEED_BYTES:
+            raise FeedFetchError(
+                f"Feed at {redact_url(url)} is larger than "
+                f"the {MAX_FEED_BYTES} byte limit"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 async def async_parse_feed(
@@ -138,8 +185,17 @@ async def async_parse_feed(
     etag: str | None = None,
     last_modified: str | None = None,
 ) -> FetchResult:
-    """Parse feed bytes in the executor and normalize the entries."""
-    parsed = await hass.async_add_executor_job(feedparser.parse, payload)
+    """Parse feed bytes in the executor and normalize the entries.
+
+    The payload is handed over as a stream, never as `bytes`: `feedparser.parse`
+    falls through to `open(argument, "rb")` for an argument that is neither
+    readable nor a URL, so a response body that is exactly a filesystem path
+    would make it read that local file instead - a feed server could have Home
+    Assistant announce the contents of any XML file on the host, or block an
+    executor thread forever on a character device, past both the fetch timeout
+    and the size cap. A `BytesIO` takes feedparser's first branch.
+    """
+    parsed = await hass.async_add_executor_job(feedparser.parse, io.BytesIO(payload))
 
     if not parsed.entries and (parsed.bozo or not parsed.get("version")):
         reason = parsed.get("bozo_exception") or "no feed items and no feed version"

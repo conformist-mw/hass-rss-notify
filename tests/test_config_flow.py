@@ -205,6 +205,40 @@ async def test_flow_errors_recover(
     assert result["title"] == "Example Blog"
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        # what a site embeds in <link href>, so a pasteable mistake. aiohttp's
+        # connector answers it with a bare AssertionError, which is neither a
+        # ClientError nor a TimeoutError, so it used to leave the flow as an
+        # unknown error with a logged traceback instead of a form error.
+        "//feeduser:s3cret@example.com/rss",
+        "//example.com/rss",
+        # the URL selector performs no server-side validation, so any string the
+        # user types arrives here
+        "mailto:s3cret@example.com",
+        "urn:s3cret",
+        "ftp://example.com/feed",
+        "http://[::1",
+    ],
+)
+async def test_a_malformed_url_is_a_form_error_not_a_crash(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    caplog: pytest.LogCaptureFixture,
+    url: str,
+) -> None:
+    """A URL that is not http(s) re-shows the form instead of escaping the flow."""
+    flow_id = await _start_flow(hass)
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {CONF_URL: url})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert not aioclient_mock.mock_calls
+    assert "s3cret" not in caplog.text
+
+
 async def test_unexpected_not_modified_is_invalid_feed(hass: HomeAssistant) -> None:
     """A 'not modified' answer to the unconditional validation fetch is an error."""
     flow_id = await _start_flow(hass)

@@ -62,3 +62,40 @@ def test_redact_urls_masks_any_scheme_quoted_in_text() -> None:
     assert masked == (
         f"cannot reach 'feed+ftp://{REDACTED}@example.com/feed?{REDACTED}' twice"
     )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "mailto:s3cret@example.com",
+        "mailto:?s3cret",
+        "data:text/html,x#s3cret",
+    ],
+)
+def test_redact_urls_masks_an_opaque_url_that_can_carry_a_secret(url: str) -> None:
+    """An opaque URL has no host to keep, so it is replaced whole inside a message.
+
+    `scheme://host/path` is not the only shape a URL field accepts. An opaque one
+    carrying an `@`, a `?` or a `#` is masked too, because there is nowhere in it
+    a secret could not sit.
+    """
+    masked = redact_urls(f"Error fetching feed from {url}: boom")
+
+    assert "s3cret" not in masked
+    assert REDACTED in masked
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # aiohttp's connection errors: `scheme:word` shapes that are not URLs.
+        # A pattern loose enough to catch `urn:x` swallows these, and masking the
+        # host and port of a failure would make every report useless.
+        "Cannot connect to host example.com:443 ssl:default [Connect call failed]",
+        "Cannot connect to host example.com:443 ssl:True [nodename nor servname]",
+        "Timeout on reading data from socket, host example.com:8080",
+    ],
+)
+def test_redact_urls_leaves_a_hostport_diagnosis_intact(text: str) -> None:
+    """Masking must not eat the host and port aiohttp reports a failure against."""
+    assert redact_urls(text) == text

@@ -5,18 +5,21 @@ from http import HTTPStatus
 from typing import Any
 
 from freezegun.api import FrozenDateTimeFactory
+from homeassistant.components.event import ATTR_EVENT_TYPE
 from homeassistant.const import (
     ATTR_FRIENDLY_NAME,
     EVENT_STATE_CHANGED,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
-from homeassistant.core import Event, HomeAssistant
+from homeassistant.core import Event, HomeAssistant, State
 from homeassistant.helpers import entity_registry as er
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_capture_events,
     async_fire_time_changed,
+    mock_restore_cache_with_extra_data,
 )
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
@@ -45,6 +48,8 @@ from .conftest import (
 )
 
 FIVE_POSTS = ["post-1", "post-2", "post-3", "post-4", "post-5"]
+# the state an event entity carries after a restart: the last event's timestamp
+RESTORED_EVENT_STATE = "2026-07-01T12:00:00.000+00:00"
 # well past the 500-char attribute cap
 LONG_BODY = "Lorem ipsum dolor sit amet. " * 40
 
@@ -214,3 +219,95 @@ async def test_entity_unavailable_while_the_feed_cannot_be_polled(
     # recovering keeps the last item, no event is replayed
     assert hass.states.get(entity_id).state == last_event_state
     assert hass.states.get(entity_id).attributes[ATTR_ITEM_ID] == "post-5"
+
+
+# the entity_id the README's example names, which is what a feed titled
+# "Example Blog" is called
+NOTIFY_ENTITY_ID = "event.example_blog_new_item"
+NOTIFIED_EVENT = "rss_notify_test_notified"
+
+# the trigger and both guards of the README's entity example, kept as they are
+# written there so a change to the documented automation has to change this test
+NOTIFY_AUTOMATION = {
+    "alias": "RSS to notification drawer",
+    "mode": "queued",
+    "max": 50,
+    "triggers": [
+        {
+            "trigger": "state",
+            "entity_id": NOTIFY_ENTITY_ID,
+            "not_to": [STATE_UNKNOWN, STATE_UNAVAILABLE],
+        }
+    ],
+    "conditions": [
+        {
+            "condition": "template",
+            "value_template": "{{ trigger.from_state is not none }}",
+        }
+    ],
+    "actions": [{"event": NOTIFIED_EVENT}],
+}
+
+
+async def test_a_restart_does_not_re_notify_the_last_item(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """The documented entity automation ignores the state a restart restores.
+
+    `EventEntity` extends `RestoreEntity`, so after a restart the entity is added
+    back holding the timestamp and attributes of the item it announced *before*
+    the restart. Writing that restored state is a `state_changed` with
+    `old_state=None`, and `not_from`/`not_to` do not filter it - the matcher
+    returns True for "no previous state". Without the `trigger.from_state is not
+    none` condition the recommended automation therefore re-sends the last item
+    once per Home Assistant restart, which is exactly what the README's
+    no-replay promise says cannot happen.
+    """
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    entity_id = NOTIFY_ENTITY_ID
+    restored_attributes = {
+        ATTR_EVENT_TYPE: EVENT_TYPE_NEW_ITEM,
+        ATTR_ITEM_ID: "post-1",
+        ATTR_TITLE: "Already announced",
+    }
+    mock_restore_cache_with_extra_data(
+        hass,
+        (
+            (
+                State(entity_id, RESTORED_EVENT_STATE, restored_attributes),
+                {
+                    "last_event_type": EVENT_TYPE_NEW_ITEM,
+                    "last_event_attributes": restored_attributes,
+                },
+            ),
+        ),
+    )
+    assert await async_setup_component(
+        hass, "automation", {"automation": [NOTIFY_AUTOMATION]}
+    )
+    notified = async_capture_events(hass, NOTIFIED_EVENT)
+
+    # post-1 is already seen, so the poll after the "restart" emits nothing and
+    # the only state the entity has is the restored one
+    seed_store(hass_storage, entry.entry_id, ["post-1"])
+    serve_keys(aioclient_mock, ["post-1"])
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(entity_id).state == RESTORED_EVENT_STATE, (
+        "Home Assistant really does restore the last event; if this fails the "
+        "premise of the guard changed and the README has to change with it"
+    )
+    assert not notified, "the restored item must not be notified again"
+
+    # a genuinely new item still gets through
+    serve_keys(aioclient_mock, ["post-1", "post-2"])
+    await poll(hass, entry)
+
+    assert [event.event_type for event in notified] == [NOTIFIED_EVENT]
+    assert event_entity_id(hass, entry) == NOTIFY_ENTITY_ID
+    assert hass.states.get(entity_id).attributes[ATTR_ITEM_ID] == "post-2"
