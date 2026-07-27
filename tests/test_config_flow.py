@@ -22,24 +22,17 @@ from custom_components.rss_notify.const import (
     CONF_NAME,
     CONF_UPDATE_INTERVAL,
     CONF_URL,
-    DEFAULT_INITIAL_ITEMS,
-    DEFAULT_MAX_ITEMS_PER_POLL,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
 )
 
-from .conftest import FEED_URL, load_feed, serve_keys, setup_entry
+from .conftest import DEFAULT_OPTIONS, FEED_URL, load_feed, serve_keys, setup_entry
 
 UNTITLED_FEED = (
     b'<?xml version="1.0"?><rss version="2.0"><channel>'
     b"<item><title>Only post</title><guid>only-1</guid></item>"
     b"</channel></rss>"
 )
-DEFAULT_OPTIONS = {
-    CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
-    CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
-    CONF_MAX_ITEMS_PER_POLL: DEFAULT_MAX_ITEMS_PER_POLL,
-}
 
 
 @pytest.fixture
@@ -96,7 +89,8 @@ async def test_user_flow_creates_entry(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Example Blog"
-    assert result["data"] == {CONF_URL: FEED_URL, CONF_NAME: "Example Blog"}
+    # the name lives in the entry title alone, so a UI rename cannot desync it
+    assert result["data"] == {CONF_URL: FEED_URL}
     assert result["options"] == DEFAULT_OPTIONS
     assert result["result"].unique_id == FEED_URL
     assert len(mock_setup_entry.mock_calls) == 1
@@ -115,7 +109,6 @@ async def test_user_flow_custom_name_wins(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "My feed"
-    assert result["data"][CONF_NAME] == "My feed"
 
 
 @pytest.mark.parametrize(
@@ -144,7 +137,6 @@ async def test_user_flow_falls_back_to_the_feed_host_as_title(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == expected_title
-    assert result["data"][CONF_NAME] == expected_title
 
 
 async def test_duplicate_feed_aborts(

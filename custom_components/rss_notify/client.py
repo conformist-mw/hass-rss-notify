@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from calendar import timegm
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -17,9 +16,12 @@ from typing import Any, Final
 
 import aiohttp
 import feedparser
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_TIMEOUT
+from .const import DEFAULT_TIMEOUT, MAX_FEED_BYTES
+from .redact import redact_url, redact_urls
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +29,10 @@ USER_AGENT: Final = "HomeAssistant-rss_notify"
 
 _TAG_RE: Final = re.compile(r"<[^>]+>")
 _WHITESPACE_RE: Final = re.compile(r"\s+")
+
+# a feed problem does not heal between polls, so the same warning would repeat
+# for as long as the feed is configured; see `_log_feed_problem`
+_WARNED: Final[set[str]] = set()
 
 
 class FeedError(Exception):
@@ -70,7 +76,7 @@ class NotModified:
 
 
 async def async_fetch_feed(
-    session: aiohttp.ClientSession,
+    hass: HomeAssistant,
     url: str,
     etag: str | None = None,
     last_modified: str | None = None,
@@ -80,7 +86,8 @@ async def async_fetch_feed(
 
     Returns `NotModified` when the server reports the feed is unchanged. Raises
     `FeedFetchError` on transport/HTTP problems and `FeedParseError` when the
-    payload is not a usable feed.
+    payload is not a usable feed. Error messages carry the *redacted* URL: they
+    are logged and shown in the UI as the failure reason of the entry.
     """
     headers = {"User-Agent": USER_AGENT}
     if etag:
@@ -89,43 +96,57 @@ async def async_fetch_feed(
         headers["If-Modified-Since"] = last_modified
 
     try:
-        async with session.get(
+        async with async_get_clientsession(hass).get(
             url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout_seconds)
         ) as response:
             if response.status == HTTPStatus.NOT_MODIFIED:
-                _LOGGER.debug("Feed %s not modified", url)
+                _LOGGER.debug("Feed %s not modified", redact_url(url))
                 return NotModified()
             response.raise_for_status()
-            payload = await response.read()
+            # a hostile or misconfigured URL must not buffer an unbounded body
+            # into memory: one byte over the cap is enough to reject it
+            payload = await response.content.read(MAX_FEED_BYTES + 1)
             new_etag = response.headers.get("ETag")
             new_last_modified = response.headers.get("Last-Modified")
     except TimeoutError as err:
-        raise FeedFetchError(f"Timeout fetching feed from {url}") from err
+        raise FeedFetchError(f"Timeout fetching feed from {redact_url(url)}") from err
     except aiohttp.ClientError as err:
-        raise FeedFetchError(f"Error fetching feed from {url}: {err}") from err
+        # the transport quotes the raw URL in its own message, so redact the
+        # whole composed text rather than only the part built here
+        raise FeedFetchError(
+            redact_urls(f"Error fetching feed from {url}: {err}")
+        ) from err
+
+    if len(payload) > MAX_FEED_BYTES:
+        raise FeedFetchError(
+            f"Feed at {redact_url(url)} is larger than the {MAX_FEED_BYTES} byte limit"
+        )
 
     return await async_parse_feed(
-        payload, url=url, etag=new_etag, last_modified=new_last_modified
+        hass, payload, url=url, etag=new_etag, last_modified=new_last_modified
     )
 
 
 async def async_parse_feed(
+    hass: HomeAssistant,
     payload: bytes,
     url: str,
     etag: str | None = None,
     last_modified: str | None = None,
 ) -> FetchResult:
     """Parse feed bytes in the executor and normalize the entries."""
-    loop = asyncio.get_running_loop()
-    parsed = await loop.run_in_executor(None, feedparser.parse, payload)
+    parsed = await hass.async_add_executor_job(feedparser.parse, payload)
 
     if not parsed.entries and (parsed.bozo or not parsed.get("version")):
         reason = parsed.get("bozo_exception") or "no feed items and no feed version"
-        raise FeedParseError(f"Unable to parse feed from {url}: {reason}")
+        raise FeedParseError(f"Unable to parse feed from {redact_url(url)}: {reason}")
     if parsed.bozo:
         # feedparser recovered from the problem, so the entries are still usable.
-        _LOGGER.warning(
-            "Possible issue parsing feed %s: %s", url, parsed.get("bozo_exception")
+        _log_feed_problem(
+            f"bozo:{url}",
+            "Possible issue parsing feed %s: %s",
+            redact_url(url),
+            parsed.get("bozo_exception"),
         )
 
     items = [
@@ -133,6 +154,8 @@ async def async_parse_feed(
         for entry in parsed.entries
         if (item := _normalize_entry(entry, url=url)) is not None
     ]
+    # feedparser strips text nodes itself; stripping again costs nothing and
+    # keeps the guarantee (a padded title would name the device and the entity)
     feed = parsed.get("feed") or {}
     return FetchResult(
         items=items,
@@ -162,6 +185,18 @@ def to_plain_text(value: str) -> str:
     return _WHITESPACE_RE.sub(" ", html.unescape(_TAG_RE.sub(" ", value))).strip()
 
 
+def _log_feed_problem(key: str, message: str, *args: Any) -> None:
+    """Warn about a recurring feed problem once, then keep it at debug level.
+
+    A defect in a feed is still there on the next poll, so a plain warning would
+    be repeated for every poll - thousands of log lines a day at the default
+    interval. `key` identifies the problem and the feed it belongs to.
+    """
+    level = logging.DEBUG if key in _WARNED else logging.WARNING
+    _WARNED.add(key)
+    _LOGGER.log(level, message, *args)
+
+
 def _sort_key(positioned: tuple[int, FeedItem]) -> tuple[int, float]:
     """Return a sort key placing undated items before dated ones."""
     position, item = positioned
@@ -188,8 +223,10 @@ def _normalize_entry(entry: Any, url: str) -> FeedItem | None:
         summary=summary,
     )
     if key is None:
-        _LOGGER.warning(
-            "Skipping feed item without any usable identity in feed %s", url
+        _log_feed_problem(
+            f"no-identity:{url}",
+            "Skipping feed item without any usable identity in feed %s",
+            redact_url(url),
         )
         return None
 

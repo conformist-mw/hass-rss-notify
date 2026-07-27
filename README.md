@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/conformist-mw/hass-rss-notify/actions/workflows/ci.yml/badge.svg)](https://github.com/conformist-mw/hass-rss-notify/actions/workflows/ci.yml)
 [![HACS: custom repository](https://img.shields.io/badge/HACS-custom-41BDF5.svg)](https://www.hacs.xyz/docs/faq/custom_repositories/)
-[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.7.4%2B-41BDF5.svg)](https://www.home-assistant.io/)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.7.0%2B-41BDF5.svg)](https://www.home-assistant.io/)
 
 A Home Assistant custom integration that watches RSS/Atom feeds and fires an event for
 every **new** item, so you can wire up any notification method you like (Telegram, the
@@ -32,7 +32,7 @@ than that timestamp.
 | Items with a backdated or rewritten date | missed, or published again | published exactly once |
 | First poll of a new feed | publishes the whole current window (up to 20 items) | publishes the newest `initial_items` (default 1), rest silently marked seen |
 | Poll interval | fixed at 1 hour | per feed, default 5 minutes |
-| Burst protection | none | `max_items_per_poll`, remaining items trickle out on later polls |
+| Burst protection | caps a poll at `max_entries` (default 20) and discards the rest | `max_items_per_poll`, remaining items trickle out on later polls |
 | Item order | feed order | oldest → newest, so notifications read chronologically |
 
 If your feeds are well behaved, `feedreader` is fine and needs no extra install. This
@@ -41,7 +41,7 @@ change, or a publisher that dumps twenty posts at once.
 
 ## Requirements
 
-- Home Assistant 2026.7.4 or newer (the minimum HACS enforces for this repository)
+- Home Assistant 2026.7.0 or newer (the minimum HACS enforces for this repository)
 - [HACS](https://hacs.xyz/) for the recommended install path
 
 ## Installation
@@ -65,10 +65,10 @@ restart Home Assistant.
 | Field | Meaning |
 | --- | --- |
 | URL | The feed address. It is fetched and parsed right away, so a typo or a page that is not a feed is rejected in the dialog. |
-| Name | Optional. Defaults to the title the feed reports; its host is used if it reports none. |
+| Name | Optional. Defaults to the title the feed reports; its host is used if it reports none. It can be changed later by renaming the feed. |
 
-The URL is the entry's unique id, so the same feed cannot be added twice. Neither the URL
-nor the name can be changed afterwards — see [Managing feeds](#managing-feeds).
+The URL is the entry's unique id, so the same feed cannot be added twice, and it cannot be
+changed afterwards — see [Managing feeds](#managing-feeds).
 
 Each feed becomes a service device holding one entity:
 
@@ -98,14 +98,20 @@ Two surfaces carry the same payload, pick whichever suits the automation:
 
 - the bus event `rss_notify_new_item` — full item text
 - the feed's `event` entity, event type `new_item` — the same fields as state
-  attributes, with `summary` and `summary_plain` cut to 500 characters so the recorder
-  does not keep a copy of every article
+  attributes plus `event_type: new_item`, with `summary` and `summary_plain` cut to 500
+  characters so the recorder does not keep a copy of every article
+
+An event entity holds the *last* event it fired, and Home Assistant does not restore that
+across a restart: right after a restart the entity reads `unknown` with no attributes
+until the feed publishes something. That is why the entity example below excludes
+`unknown` and `unavailable` in `not_from`/`not_to` — without it, a restart or a failed
+poll would trigger the automation with no item to send.
 
 | Field | Description |
 | --- | --- |
 | `entry_id` | Config entry id of the feed, handy to filter one feed out of many |
 | `feed_url` | Feed address |
-| `feed_title` | The name the feed was added under: your name if you gave one, the feed's own title otherwise (its host if the feed reports no title). Fixed when the feed is added, so it stays stable if the publisher later renames the feed |
+| `feed_title` | The feed's name in Home Assistant: your name if you gave one, the feed's own title otherwise (its host if the feed reports no title). It is the name shown in the UI, so renaming the feed there changes it too; a rename by the *publisher* never does |
 | `item_id` | The dedup key of the item (its GUID, or its link, or a content hash) |
 | `title` | Item title |
 | `link` | Item link |
@@ -114,7 +120,10 @@ Two surfaces carry the same payload, pick whichever suits the automation:
 | `published` | Publication time in ISO 8601, or `null` when the feed gives none |
 
 Items are announced oldest first, one bus event and one state change per item, so a
-batch of five new posts produces five notifications in reading order.
+batch of five new posts produces five notifications in reading order. Items the feed
+gives no date for sort *before* every dated item, so for a feed that mixes the two the
+order is: all undated items (bottom of the document first), then the dated ones oldest
+to newest.
 
 Formatting is deliberately left to you: the payload is raw feed text, so if you send it
 with `parse_mode: markdown` or `html`, escape it in your template — an item title with a
@@ -245,13 +254,16 @@ actions:
 - **Reload** — three-dot menu → **Reload**, e.g. to rebuild a feed that is stuck after a
   long outage without waiting for the next poll. A reload keeps the seen-set and re-reads
   the stored settings; it does not re-read the feed's URL from anywhere else.
+- **Rename** — three-dot menu → **Rename**. The new name reloads the feed and becomes the
+  device name, the entity's friendly name and the `feed_title` of everything announced
+  from then on. The entity id keeps its original name; change that in the entity settings
+  if you want.
 - **Delete** — deleting the entry removes its device, entity and stored seen-set.
   Adding the same feed again starts over, announcing `initial_items` items.
 
-The URL and the name of a feed are fixed when it is added: the options dialog only offers
-the three polling options, so a feed that moved to a new address has to be deleted and
-added again. That starts its seen-set over, so expect `initial_items` announcements from
-the new entry.
+The URL of a feed is fixed when it is added: the options dialog only offers the three
+polling options, so a feed that moved to a new address has to be deleted and added again.
+That starts its seen-set over, so expect `initial_items` announcements from the new entry.
 
 ## How dedup works
 
@@ -261,7 +273,8 @@ with a warning — there is no way to recognise them again.
 
 The keys live in `.storage/rss_notify.<entry_id>` together with the feed's cache
 validators. The seen-set is insertion-ordered and pruned to the newest 5000 keys, which
-is far above any realistic feed window while keeping the file small.
+keeps the file small; a feed that lists more items than that in one document keeps all of
+them instead (see below).
 
 Some feeds list the same item twice in one document — a rewritten entry, or an archive
 merged into the current window. Repeats inside a single fetch are collapsed to their
@@ -272,26 +285,36 @@ bottom-up: RSS and Atom documents list the newest item first, so for a feed that
 nothing at all that position is the only clue about which item is the newest one. Adding
 such a feed therefore announces the item at the top of the document.
 
-Keys of items the feed still lists are refreshed on every poll, so the 5000-key cap
-always drops keys of items that have left the feed window first — an item that stays in
-the document (a pinned post, a full archive) can never age out and be announced again.
+Pruning only ever drops keys of items the feed no longer lists: the keys of the current
+document are refreshed on every poll and are exempt from the cap. An item that stays in
+the document — a pinned post, a full archive, a feed longer than 5000 items — can
+therefore never age out and be announced a second time.
 
 Two more details worth knowing:
 
-- `ETag`/`Last-Modified` are only stored when a poll leaves nothing pending. While
-  items are still trickling out under `max_items_per_poll`, the old validators are kept
-  on purpose, so the next poll gets a full response instead of a `304` that would
-  strand the backlog.
+- `ETag`/`Last-Modified` are only stored when a poll leaves nothing pending. While items
+  are still trickling out under `max_items_per_poll`, the stored validators are *cleared*,
+  so the next poll asks unconditionally and gets a full response instead of a `304` that
+  would strand the backlog. They are stored again with the poll that drains the backlog.
 - the seen-set is saved *after* the events are fired, which is what makes publication
   at-least-once rather than at-most-once.
+- every request is bounded by a fixed 30 second timeout and a 16 MiB response limit;
+  neither is configurable.
 
 ## Troubleshooting
 
 Feed's three-dot menu → **Download diagnostics** reports the feed's options, title,
 poll state, how many keys are in the seen-set, how many items are still pending, and
-the last fetch result. Feed URLs are masked — userinfo and query values are stripped
-before the report is written, so a feed behind basic auth or an access token can be
-shared safely.
+the last fetch result. Feed URLs are masked in it — userinfo, query values and the
+fragment are replaced, in the URL, in the feed's name and inside the last error message.
+
+Two limits of that masking are worth knowing before you share a report:
+
+- a secret that lives in the URL **path** (`https://example.com/feed/<token>`) is not
+  masked, because a path cannot be told apart from a credential
+- `feed_url` is part of every announced item, so it is also written to the recorder
+  database and shown as the device's link — verbatim, credentials included. The same
+  goes for debug logging, which quotes the URL as configured
 
 For more detail, turn on debug logging:
 
@@ -302,10 +325,23 @@ logger:
     custom_components.rss_notify: debug
 ```
 
+To poll a feed right now instead of waiting out `update_interval`, call
+`homeassistant.update_entity` on its event entity — it triggers a full coordinator
+refresh:
+
+```yaml
+action: homeassistant.update_entity
+target:
+  entity_id: event.example_blog_new_item
+```
+
 Common cases:
 
 - **entity is unavailable** — the last poll failed; the error is in the log and in the
   diagnostics report
+- **`cannot_connect` for a feed that works in the browser** — every request goes out with
+  `User-Agent: HomeAssistant-rss_notify`, which some CDNs and publishers answer with a
+  `403`. There is no override; such a feed needs a proxy in front of it
 - **no events at all** — check `initial_items`: a feed added with `0` stays silent until
   it publishes something new
 - **an item arrived twice** — its identity changed between polls: the feed rewrote the

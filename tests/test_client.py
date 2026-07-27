@@ -4,8 +4,10 @@ from datetime import datetime
 import hashlib
 from http import HTTPStatus
 import logging
+from typing import Any
 
 import aiohttp
+from homeassistant.components.diagnostics import REDACTED
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
@@ -13,6 +15,7 @@ import pytest
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.rss_notify.client import (
+    USER_AGENT,
     FeedFetchError,
     FeedParseError,
     FetchResult,
@@ -23,9 +26,11 @@ from custom_components.rss_notify.client import (
     to_plain_text,
 )
 
-from .conftest import load_feed
+from .conftest import FEED_URL, load_feed
 
-FEED_URL = "https://example.com/rss"
+# a feed behind basic auth whose query string carries an access token
+SECRET_URL = "https://feeduser:s3cret@example.com/private/rss?token=t0ken"
+SECRET_PARTS = ("s3cret", "t0ken", "feeduser")
 
 EMPTY_FEED = (
     b'<?xml version="1.0"?><rss version="2.0"><channel>'
@@ -67,7 +72,7 @@ async def test_fetch_and_parse_basic(
         headers={"ETag": '"abc"', "Last-Modified": "Fri, 24 Jul 2026 12:00:00 GMT"},
     )
 
-    result = await async_fetch_feed(async_get_clientsession(hass), FEED_URL)
+    result = await async_fetch_feed(hass, FEED_URL)
 
     assert isinstance(result, FetchResult)
     assert result.feed_title == "Example Blog"
@@ -84,9 +89,11 @@ async def test_fetch_and_parse_basic(
     assert newest.summary_plain == "Third & newest post"
     assert newest.published == datetime(2026, 7, 24, 12, 0, tzinfo=dt_util.UTC)
 
-    # a user agent is always sent
+    # the user agent is fixed: some publishers filter on it, so a change to it
+    # is a change in behaviour and has to be a deliberate one
     _method, _url, _data, headers = aioclient_mock.mock_calls[0]
-    assert "User-Agent" in headers
+    assert headers["User-Agent"] == "HomeAssistant-rss_notify"
+    assert USER_AGENT == "HomeAssistant-rss_notify"
     assert "If-None-Match" not in headers
     assert "If-Modified-Since" not in headers
 
@@ -98,7 +105,7 @@ async def test_conditional_get_sends_validators(
     aioclient_mock.get(FEED_URL, content=load_feed("feed_basic"))
 
     await async_fetch_feed(
-        async_get_clientsession(hass),
+        hass,
         FEED_URL,
         etag='"abc"',
         last_modified="Fri, 24 Jul 2026 12:00:00 GMT",
@@ -115,9 +122,7 @@ async def test_not_modified(
     """A 304 response yields NotModified without touching the payload."""
     aioclient_mock.get(FEED_URL, status=HTTPStatus.NOT_MODIFIED)
 
-    result = await async_fetch_feed(
-        async_get_clientsession(hass), FEED_URL, etag='"abc"'
-    )
+    result = await async_fetch_feed(hass, FEED_URL, etag='"abc"')
 
     assert isinstance(result, NotModified)
 
@@ -128,7 +133,7 @@ async def test_key_falls_back_to_link(
     """Items without a guid are identified by their link."""
     aioclient_mock.get(FEED_URL, content=load_feed("feed_no_guid"))
 
-    result = await async_fetch_feed(async_get_clientsession(hass), FEED_URL)
+    result = await async_fetch_feed(hass, FEED_URL)
 
     assert isinstance(result, FetchResult)
     assert [item.key for item in result.items] == [
@@ -146,7 +151,7 @@ async def test_key_falls_back_to_fingerprint_and_skips_unidentifiable(
     aioclient_mock.get(FEED_URL, content=load_feed("feed_no_ids"))
 
     with caplog.at_level(logging.WARNING):
-        result = await async_fetch_feed(async_get_clientsession(hass), FEED_URL)
+        result = await async_fetch_feed(hass, FEED_URL)
 
     assert isinstance(result, FetchResult)
     expected = hashlib.sha256(
@@ -172,7 +177,7 @@ async def test_sort_items_oldest_first(
     """
     aioclient_mock.get(FEED_URL, content=load_feed("feed_no_dates"))
 
-    result = await async_fetch_feed(async_get_clientsession(hass), FEED_URL)
+    result = await async_fetch_feed(hass, FEED_URL)
 
     assert isinstance(result, FetchResult)
     assert [item.key for item in sort_items_oldest_first(result.items)] == [
@@ -189,7 +194,7 @@ async def test_sort_of_an_entirely_undated_feed_reverses_the_document(
     """With no date anywhere, the topmost item of the document is the newest."""
     aioclient_mock.get(FEED_URL, content=load_feed("feed_undated"))
 
-    result = await async_fetch_feed(async_get_clientsession(hass), FEED_URL)
+    result = await async_fetch_feed(hass, FEED_URL)
 
     assert isinstance(result, FetchResult)
     assert [item.key for item in result.items] == ["u-3", "u-2", "u-1"]
@@ -207,7 +212,7 @@ async def test_malformed_feed_raises(
     aioclient_mock.get(FEED_URL, content=load_feed("feed_malformed"))
 
     with pytest.raises(FeedParseError):
-        await async_fetch_feed(async_get_clientsession(hass), FEED_URL)
+        await async_fetch_feed(hass, FEED_URL)
 
 
 async def test_http_error_raises(
@@ -217,7 +222,7 @@ async def test_http_error_raises(
     aioclient_mock.get(FEED_URL, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     with pytest.raises(FeedFetchError):
-        await async_fetch_feed(async_get_clientsession(hass), FEED_URL)
+        await async_fetch_feed(hass, FEED_URL)
 
 
 async def test_network_error_raises(
@@ -227,7 +232,7 @@ async def test_network_error_raises(
     aioclient_mock.get(FEED_URL, exc=aiohttp.ClientError("boom"))
 
     with pytest.raises(FeedFetchError, match="Error fetching feed"):
-        await async_fetch_feed(async_get_clientsession(hass), FEED_URL)
+        await async_fetch_feed(hass, FEED_URL)
 
 
 async def test_timeout_raises(
@@ -237,14 +242,77 @@ async def test_timeout_raises(
     aioclient_mock.get(FEED_URL, exc=TimeoutError())
 
     with pytest.raises(FeedFetchError, match="Timeout"):
-        await async_fetch_feed(
-            async_get_clientsession(hass), FEED_URL, timeout_seconds=1
-        )
+        await async_fetch_feed(hass, FEED_URL, timeout_seconds=1)
 
 
-async def test_atom_feed_uses_id_content_and_updated() -> None:
+def capture_request_kwargs(hass: HomeAssistant) -> dict[str, Any]:
+    """Return a dict filled with the kwargs of the next request of the session."""
+    session = async_get_clientsession(hass)
+    captured: dict[str, Any] = {}
+    original = session._request
+
+    async def spy(method: str, url: str, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return await original(method, url, **kwargs)
+
+    # the mocker patches the session the same way; plain setattr would warn
+    object.__setattr__(session, "_request", spy)
+    return captured
+
+
+async def test_request_carries_the_fixed_timeout(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Every request is bounded by the fixed 30 second timeout."""
+    aioclient_mock.get(FEED_URL, content=load_feed("feed_basic"))
+    captured = capture_request_kwargs(hass)
+
+    await async_fetch_feed(hass, FEED_URL)
+
+    assert captured["timeout"].total == 30
+
+
+async def test_oversized_body_is_refused(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A response bigger than the cap is rejected instead of being buffered."""
+    monkeypatch.setattr("custom_components.rss_notify.client.MAX_FEED_BYTES", 64)
+    aioclient_mock.get(FEED_URL, content=load_feed("feed_basic"))
+
+    with pytest.raises(FeedFetchError, match="larger than the 64 byte limit"):
+        await async_fetch_feed(hass, FEED_URL)
+
+
+@pytest.mark.parametrize(
+    ("mock_kwargs", "match"),
+    [
+        ({"status": HTTPStatus.INTERNAL_SERVER_ERROR}, "Error fetching feed"),
+        ({"exc": TimeoutError()}, "Timeout fetching feed"),
+        ({"content": b"<html><body>not a feed</body></html>"}, "Unable to parse feed"),
+    ],
+)
+async def test_errors_never_quote_the_feed_credentials(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    mock_kwargs: dict[str, Any],
+    match: str,
+) -> None:
+    """Error messages carry a redacted URL: they are logged and shown in the UI."""
+    aioclient_mock.get(SECRET_URL, **mock_kwargs)
+
+    with pytest.raises((FeedFetchError, FeedParseError), match=match) as raised:
+        await async_fetch_feed(hass, SECRET_URL)
+
+    message = str(raised.value)
+    assert REDACTED in message
+    assert not any(secret in message for secret in SECRET_PARTS)
+
+
+async def test_atom_feed_uses_id_content_and_updated(hass: HomeAssistant) -> None:
     """An Atom entry is keyed by its id and dated from `updated`."""
-    result = await async_parse_feed(ATOM_FEED, FEED_URL)
+    result = await async_parse_feed(hass, ATOM_FEED, FEED_URL)
 
     assert result.feed_title == "Atom Blog"
     assert result.feed_link == "https://atom.example.com/"
@@ -256,23 +324,64 @@ async def test_atom_feed_uses_id_content_and_updated() -> None:
     assert item.published == datetime(2026, 7, 24, 6, 0, tzinfo=dt_util.UTC)
 
 
-async def test_empty_but_valid_feed_has_no_items() -> None:
+async def test_empty_but_valid_feed_has_no_items(hass: HomeAssistant) -> None:
     """A valid feed with no items parses into an empty item list."""
-    result = await async_parse_feed(EMPTY_FEED, FEED_URL)
+    result = await async_parse_feed(hass, EMPTY_FEED, FEED_URL)
 
     assert result.items == []
     assert result.feed_title == "Empty"
 
 
+async def test_feed_meta_carries_no_surrounding_whitespace(hass: HomeAssistant) -> None:
+    """The feed's own title and link arrive without surrounding whitespace.
+
+    A padded title would end up as the device and entity name of the feed. The
+    pinned feedparser already strips text nodes, so this pins the contract rather
+    than one implementation of it - `client.py` strips again for the same reason.
+    """
+    payload = (
+        b'<?xml version="1.0"?><rss version="2.0"><channel>'
+        b"<title>  Padded Blog\n</title><link> https://padded.example.com/ </link>"
+        b"<item><title>Post</title><guid>padded-1</guid></item>"
+        b"</channel></rss>"
+    )
+
+    result = await async_parse_feed(hass, payload, FEED_URL)
+
+    assert result.feed_title == "Padded Blog"
+    assert result.feed_link == "https://padded.example.com/"
+
+
 async def test_recoverable_parse_problem_logs_warning(
-    caplog: pytest.LogCaptureFixture,
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A bozo feed that still yields entries is used, with a warning logged."""
     with caplog.at_level(logging.WARNING):
-        result = await async_parse_feed(BOZO_FEED, FEED_URL)
+        result = await async_parse_feed(hass, BOZO_FEED, FEED_URL)
 
     assert [item.key for item in result.items] == ["bozo-1"]
     assert "Possible issue parsing feed" in caplog.text
+
+
+async def test_a_lasting_feed_problem_is_warned_about_only_once(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A defect that does not heal warns once, then stays at debug level.
+
+    The same feed is polled every few minutes and the defect is still there
+    every time, so a plain warning would add thousands of log lines a day.
+    """
+    with caplog.at_level(logging.DEBUG):
+        await async_parse_feed(hass, BOZO_FEED, FEED_URL)
+        await async_parse_feed(hass, BOZO_FEED, FEED_URL)
+        await async_parse_feed(hass, BOZO_FEED, FEED_URL)
+
+    levels = [
+        record.levelno
+        for record in caplog.records
+        if "Possible issue parsing feed" in record.getMessage()
+    ]
+    assert levels == [logging.WARNING, logging.DEBUG, logging.DEBUG]
 
 
 def test_to_plain_text() -> None:

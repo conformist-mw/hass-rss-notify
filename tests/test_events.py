@@ -3,7 +3,12 @@
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntryDisabler, ConfigEntryState
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, Platform
+from homeassistant.const import (
+    ATTR_FRIENDLY_NAME,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+    Platform,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from pytest_homeassistant_custom_component.common import (
@@ -36,8 +41,10 @@ from .conftest import (
     OTHER_FEED_URL,
     event_entity_id,
     feed_bytes,
+    load_feed,
     make_config_entry,
     seed_store,
+    serve,
     serve_keys,
     setup_entry,
     stored,
@@ -121,7 +128,7 @@ async def test_two_feeds_stay_independent(
 ) -> None:
     """One config entry per feed: events, entities and storage stay separate."""
     first = make_config_entry()
-    second = make_config_entry(name=OTHER_FEED_TITLE, url=OTHER_FEED_URL)
+    second = make_config_entry(title=OTHER_FEED_TITLE, url=OTHER_FEED_URL)
     aioclient_mock.get(FEED_URL, content=feed_bytes(["post-1"]))
     aioclient_mock.get(
         OTHER_FEED_URL, content=feed_bytes(["other-1"], title=OTHER_FEED_TITLE)
@@ -156,6 +163,57 @@ async def test_two_feeds_stay_independent(
     # the seen-sets do not know about each other
     assert stored(hass_storage, first.entry_id)["seen"] == ["post-1"]
     assert stored(hass_storage, second.entry_id)["seen"] == ["other-1"]
+
+
+async def test_an_undated_item_reports_no_publication_time(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """An item the feed gives no date for is announced with `published: null`."""
+    entry = make_config_entry()
+    seed_store(hass_storage, entry.entry_id, ["already-seen"])
+    serve(aioclient_mock, content=load_feed("feed_undated"))
+    events = async_capture_events(hass, EVENT_NEW_ITEM)
+
+    await setup_entry(hass, entry)
+
+    assert [event.data[ATTR_PUBLISHED] for event in events] == [None, None, None]
+    attributes = hass.states.get(event_entity_id(hass, entry)).attributes
+    assert attributes[ATTR_PUBLISHED] is None
+
+
+async def test_renaming_the_feed_updates_its_name_everywhere(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Renaming the entry reloads the feed and renames device, entity and payload.
+
+    The feed's name lives in the entry title only, so a rename is picked up by
+    the reload the update listener triggers - and cannot leave the device, the
+    entity and the announced `feed_title` disagreeing.
+    """
+    entry = make_config_entry()
+    serve_keys(aioclient_mock, THREE_POSTS)
+    await setup_entry(hass, entry)
+    entity_id = event_entity_id(hass, entry)
+    events = async_capture_events(hass, EVENT_NEW_ITEM)
+
+    serve_keys(aioclient_mock, [*THREE_POSTS, "post-4"])
+    hass.config_entries.async_update_entry(entry, title="Renamed Blog")
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.feed_title == "Renamed Blog"
+    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, entry.entry_id)})
+    assert device.name == "Renamed Blog"
+    assert hass.states.get(entity_id).attributes[ATTR_FRIENDLY_NAME] == (
+        "Renamed Blog New item"
+    )
+    # the reload keeps the seen-set, so only the new item is announced - under
+    # the new name
+    assert [
+        (event.data[ATTR_ITEM_ID], event.data[ATTR_FEED_TITLE]) for event in events
+    ] == [("post-4", "Renamed Blog")]
 
 
 async def test_initial_items_reach_the_event_entity(

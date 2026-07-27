@@ -17,7 +17,7 @@ from custom_components.rss_notify.const import (
     EVENT_NEW_ITEM,
 )
 from custom_components.rss_notify.coordinator import RssFeedCoordinator
-from custom_components.rss_notify.storage import SeenStore
+from custom_components.rss_notify.storage import SeenStore, storage_key
 
 from .conftest import (
     FEED_LINK,
@@ -77,14 +77,14 @@ async def test_initial_sync(
     assert coordinator.last_update_success is True
     assert emitted(coordinator) == expected
     assert coordinator.data.pending == 0
-    assert coordinator.data.feed_title == FEED_TITLE
-    assert coordinator.data.feed_link == FEED_LINK
+    assert coordinator.feed_title == FEED_TITLE
+    assert coordinator.feed_link == FEED_LINK
 
     # every item of the feed is marked seen, emitted or not
     persisted = stored(hass_storage, entry.entry_id)
     assert persisted["seen"] == ["post-1", "post-2", "post-3"]
     assert persisted["etag"] == '"v1"'
-    assert coordinator.seen_count == 3
+    assert coordinator.store.seen_count == 3
 
 
 async def test_initial_sync_is_not_capped_by_max_items_per_poll(
@@ -107,6 +107,36 @@ async def test_initial_sync_is_not_capped_by_max_items_per_poll(
     assert emitted(coordinator) == TWENTY_FIVE[-8:]
     assert coordinator.data.pending == 0
     # every item is seen, so the cap only governs the polls that follow
+    assert stored(hass_storage, entry.entry_id)["seen"] == TWENTY_FIVE
+
+
+async def test_a_feed_that_is_empty_when_added_syncs_on_its_first_items(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+) -> None:
+    """An empty feed keeps its initial sync until it publishes something.
+
+    Persisting an empty seen-set would end the feed's "new" state, so the batch
+    it publishes later would arrive as a capped steady-state poll instead of the
+    promised `initial_items` announcement.
+    """
+    entry = make_config_entry()
+    entry.add_to_hass(hass)
+    serve(aioclient_mock, content=feed_bytes([]))
+
+    coordinator = await build_coordinator(hass, entry)
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == []
+    assert storage_key(entry.entry_id) not in hass_storage
+
+    # the feed fills up: exactly one item is announced, the rest stays silent
+    serve_keys(aioclient_mock, TWENTY_FIVE)
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == ["post-25"]
+    assert coordinator.data.pending == 0
     assert stored(hass_storage, entry.entry_id)["seen"] == TWENTY_FIVE
 
 
@@ -298,7 +328,7 @@ async def test_items_without_identity_are_ignored_every_poll(
     await coordinator.async_refresh()
 
     assert emitted(coordinator) == []
-    assert coordinator.seen_count == 2
+    assert coordinator.store.seen_count == 2
 
 
 async def test_not_modified_while_a_backlog_is_pending_keeps_the_backlog(
@@ -325,6 +355,8 @@ async def test_not_modified_while_a_backlog_is_pending_keeps_the_backlog(
     await coordinator.async_refresh()
 
     assert emitted(coordinator) == []
+    # the backlog is still queued, so it is still reported (diagnostics read it)
+    assert coordinator.data.pending == 15
     assert stored(hass_storage, entry.entry_id) == before
 
     # the next full response continues the trickle where it stopped
@@ -407,34 +439,46 @@ async def test_store_is_saved_once_per_poll_and_only_when_needed(
     assert len(saves) == 1
 
 
-async def test_configured_name_stays_the_reported_feed_title(
+async def test_the_entry_title_is_the_reported_feed_title(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    """A name configured for the feed is not overwritten by the feed's title."""
-    entry = make_config_entry(name="Work RSS")
+    """The feed is named after its entry, never after the document it serves.
+
+    The config flow puts the user's name - or the feed's own title, or its host -
+    into the entry title, and the device, the entity and the payload all read it
+    from there. Adopting the document's <title> per poll could only make the four
+    disagree after a publisher rename.
+    """
+    entry = make_config_entry(title="Work RSS")
     entry.add_to_hass(hass)
-    serve(aioclient_mock, content=feed_bytes(["post-1"], title="Example Blog"))
+    serve(aioclient_mock, content=feed_bytes(["post-1"], title="Publisher Rename"))
 
     coordinator = await build_coordinator(hass, entry)
     await coordinator.async_refresh()
 
     assert coordinator.feed_title == "Work RSS"
-    assert coordinator.data.feed_title == "Work RSS"
 
 
-async def test_feed_title_is_discovered_when_no_name_is_configured(
+async def test_feed_link_falls_back_to_the_last_one_reported(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    """Without a configured name the feed's own title is adopted."""
-    entry = make_config_entry(name=None)
+    """A feed that stops reporting a <link> keeps the link it reported before."""
+    entry = make_config_entry()
     entry.add_to_hass(hass)
-    serve(aioclient_mock, content=feed_bytes(["post-1"], title="Discovered Blog"))
+    serve(aioclient_mock, content=feed_bytes(["post-1"]))
 
     coordinator = await build_coordinator(hass, entry)
     await coordinator.async_refresh()
+    assert coordinator.feed_link == FEED_LINK
 
-    assert coordinator.feed_title == "Discovered Blog"
-    assert coordinator.data.feed_title == "Discovered Blog"
+    linkless = feed_bytes(["post-1", "post-2"]).replace(
+        f"<link>{FEED_LINK}</link>".encode(), b""
+    )
+    serve(aioclient_mock, content=linkless)
+    await coordinator.async_refresh()
+
+    assert emitted(coordinator) == ["post-2"]
+    assert coordinator.feed_link == FEED_LINK
 
 
 async def test_restart_does_not_reemit(
@@ -486,8 +530,9 @@ async def test_not_modified_is_a_no_op(
     assert coordinator.last_update_success is True
     assert emitted(coordinator) == []
     assert coordinator.data.pending == 0
-    assert coordinator.data.feed_title == FEED_TITLE
-    assert coordinator.data.feed_link == FEED_LINK
+    # the feed meta of the last full response is kept
+    assert coordinator.feed_title == FEED_TITLE
+    assert coordinator.feed_link == FEED_LINK
     assert stored(hass_storage, entry.entry_id) == before
 
 
@@ -507,7 +552,8 @@ async def test_last_modified_is_persisted_and_sent_back(
     persisted = stored(hass_storage, entry.entry_id)
     assert persisted["last_modified"] == LAST_MODIFIED
     assert persisted["etag"] is None
-    assert coordinator.cache_validators == {"etag": False, "last_modified": True}
+    assert coordinator.store.last_modified == LAST_MODIFIED
+    assert coordinator.store.etag is None
 
     serve(aioclient_mock, status=HTTPStatus.NOT_MODIFIED)
     await coordinator.async_refresh()
@@ -519,12 +565,12 @@ async def test_last_modified_is_persisted_and_sent_back(
     assert emitted(coordinator) == []
 
 
-async def test_last_modified_is_held_back_while_a_backlog_is_pending(
+async def test_last_modified_is_cleared_while_a_backlog_is_pending(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
     hass_storage: dict[str, Any],
 ) -> None:
-    """A pending backlog keeps the old `Last-Modified`, like it keeps the ETag."""
+    """A pending backlog clears the stored `Last-Modified`, like it clears the ETag."""
     entry = make_config_entry()
     entry.add_to_hass(hass)
     seed_store(
@@ -539,10 +585,13 @@ async def test_last_modified_is_held_back_while_a_backlog_is_pending(
     await coordinator.async_refresh()
 
     assert coordinator.data.pending == 15
-    assert (
-        stored(hass_storage, entry.entry_id)["last_modified"]
-        == "Tue, 21 Jul 2026 12:00:00 GMT"
-    )
+    assert stored(hass_storage, entry.entry_id)["last_modified"] is None
+
+    # so the next poll is unconditional and cannot be answered with a 304
+    serve_keys(aioclient_mock, TWENTY_FIVE, last_modified=LAST_MODIFIED)
+    await coordinator.async_refresh()
+
+    assert "If-Modified-Since" not in sent_headers(aioclient_mock)
 
 
 async def test_items_still_listed_do_not_age_out_of_the_seen_set(
@@ -635,12 +684,18 @@ async def test_fetch_and_parse_failures_raise_update_failed(
     }
 
 
-async def test_backlog_keeps_the_previous_validators(
+async def test_backlog_clears_the_stored_validators(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
     hass_storage: dict[str, Any],
 ) -> None:
-    """With a backlog pending, the old validators are kept, not the new ones."""
+    """With a backlog pending the stored validators are cleared, not updated.
+
+    Keeping the previous ones would only make a 304 unlikely: a server whose
+    current validator equals the stored one - a coarse `Last-Modified`, or a 200
+    served with an unchanged ETag - would strand the backlog. No validator at
+    all guarantees the full response the trickle needs.
+    """
     entry = make_config_entry()
     entry.add_to_hass(hass)
     seed_store(hass_storage, entry.entry_id, ["already-seen"], etag='"v0"')
@@ -651,7 +706,12 @@ async def test_backlog_keeps_the_previous_validators(
 
     assert sent_headers(aioclient_mock)["If-None-Match"] == '"v0"'
     assert coordinator.data.pending == 15
-    assert stored(hass_storage, entry.entry_id)["etag"] == '"v0"'
+    assert stored(hass_storage, entry.entry_id)["etag"] is None
+
+    serve_keys(aioclient_mock, TWENTY_FIVE, etag='"v1"')
+    await coordinator.async_refresh()
+
+    assert "If-None-Match" not in sent_headers(aioclient_mock)
 
 
 async def test_trickle_holds_validators_across_restart(

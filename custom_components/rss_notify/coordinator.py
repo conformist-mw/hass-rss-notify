@@ -9,7 +9,6 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import (
     TimestampDataUpdateCoordinator,
@@ -36,12 +35,10 @@ from .const import (
     ATTR_TITLE,
     CONF_INITIAL_ITEMS,
     CONF_MAX_ITEMS_PER_POLL,
-    CONF_NAME,
     CONF_UPDATE_INTERVAL,
     CONF_URL,
     DEFAULT_INITIAL_ITEMS,
     DEFAULT_MAX_ITEMS_PER_POLL,
-    DEFAULT_TIMEOUT,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
     EVENT_NEW_ITEM,
@@ -80,8 +77,6 @@ class FeedData:
     """Outcome of a single poll, exposed as coordinator data to consumers."""
 
     new_items: list[FeedItem]
-    feed_title: str
-    feed_link: str
     pending: int
 
 
@@ -91,9 +86,9 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
     Items are deduplicated against a persistent seen-set, so a restart never
     re-emits. At most `max_items_per_poll` items are emitted per poll; the rest
     stay unseen and trickle out on subsequent polls. While such a backlog is
-    pending, the conditional-GET validators of the response are *not* persisted,
-    so the next poll re-fetches a full 200 instead of getting a 304 that would
-    strand the trickle.
+    pending, the conditional-GET validators are cleared instead of updated, so
+    the next poll is unconditional and re-fetches a full 200 rather than being
+    stranded behind a 304.
     """
 
     config_entry: ConfigEntry
@@ -104,17 +99,17 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
         """Initialize the coordinator of one feed from its config entry."""
         options = entry.options
         self.url: str = entry.data[CONF_URL]
-        # a name configured for the feed is what the device and the entity are
-        # named after, so it also stays the title reported to consumers
-        self._configured_title: str = (entry.data.get(CONF_NAME) or "").strip()
-        self.feed_title: str = self._configured_title or entry.title
+        # the entry title is the feed's name: the config flow puts the user's
+        # name (or the feed's own title, or its host) there, and HA keeps it in
+        # step with a rename in the UI. The device, the entity and the payload
+        # all report this one value, so they can never disagree.
+        self.feed_title: str = entry.title
         self.feed_link: str = ""
         self.initial_items: int = options.get(CONF_INITIAL_ITEMS, DEFAULT_INITIAL_ITEMS)
         self.max_items_per_poll: int = options.get(
             CONF_MAX_ITEMS_PER_POLL, DEFAULT_MAX_ITEMS_PER_POLL
         )
-        self._store = store
-        self._session = async_get_clientsession(hass)
+        self.store = store
         super().__init__(
             hass,
             _LOGGER,
@@ -125,50 +120,40 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
             ),
         )
 
-    @property
-    def seen_count(self) -> int:
-        """Return how many item keys the feed has marked as seen."""
-        return self._store.seen_count
-
-    @property
-    def cache_validators(self) -> dict[str, bool]:
-        """Return which conditional-GET validators are currently stored.
-
-        Reported by presence only: their values say nothing useful once it is
-        known whether the next poll can be answered with a 304 at all.
-        """
-        return {
-            "etag": self._store.etag is not None,
-            "last_modified": self._store.last_modified is not None,
-        }
-
     async def _async_update_data(self) -> FeedData:
         """Fetch the feed once and return the items emitted by this poll."""
         try:
             result = await async_fetch_feed(
-                self._session,
+                self.hass,
                 self.url,
-                etag=self._store.etag,
-                last_modified=self._store.last_modified,
-                timeout_seconds=DEFAULT_TIMEOUT,
+                etag=self.store.etag,
+                last_modified=self.store.last_modified,
             )
         except FeedError as err:
             raise UpdateFailed(str(err)) from err
 
         if isinstance(result, NotModified):
             # nothing changed upstream, so nothing is emitted and nothing is
-            # persisted; the feed meta of the previous poll is kept
-            return self._data(new_items=[], pending=0)
+            # persisted; a backlog stays pending and keeps being reported as such
+            return FeedData(new_items=[], pending=self.data.pending if self.data else 0)
 
-        if not self._configured_title:
-            self.feed_title = result.feed_title or self.feed_title
         self.feed_link = result.feed_link or self.feed_link
         return await self._async_process(result)
 
     async def _async_process(self, result: FetchResult) -> FeedData:
         """Select the items to emit from a fetched feed and persist the state."""
         ordered = _drop_repeated_keys(sort_items_oldest_first(result.items), self.url)
-        first_refresh = self._store.is_new
+        first_refresh = self.store.is_new
+
+        if first_refresh and not ordered:
+            # a feed that is empty when it is added has nothing to sync yet.
+            # Persisting now would end its "new" state, so the items it
+            # publishes later would arrive as a capped steady-state batch
+            # instead of the promised `initial_items` announcement.
+            _LOGGER.debug(
+                "Feed %s is empty, keeping the initial sync pending", self.url
+            )
+            return FeedData(new_items=[], pending=0)
 
         if first_refresh:
             # a feed added just now: stay quiet about its backlog, except for
@@ -177,7 +162,7 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
             backlog: list[FeedItem] = []
             to_mark = ordered
         else:
-            unseen = [item for item in ordered if not self._store.contains(item.key)]
+            unseen = [item for item in ordered if not self.store.contains(item.key)]
             emitted, backlog = self._split_batch(unseen)
             to_mark = emitted
 
@@ -187,7 +172,7 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
         self._emit(emitted)
         # keys the feed still lists must not age out of the seen-set before the
         # ones it has dropped, or pruning would re-announce an item still listed
-        self._store.touch(item.key for item in ordered)
+        self.store.touch(item.key for item in ordered)
         await self._async_persist(result, to_mark, hold_validators=bool(backlog))
 
         _LOGGER.debug(
@@ -197,7 +182,7 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
             len(backlog),
             " (first sync)" if first_refresh else "",
         )
-        return self._data(new_items=emitted, pending=len(backlog))
+        return FeedData(new_items=emitted, pending=len(backlog))
 
     async def _async_persist(
         self, result: FetchResult, to_mark: list[FeedItem], hold_validators: bool
@@ -207,27 +192,26 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
         The save happens after the items have been handed to consumers, so a
         crash re-emits rather than loses an item (at-least-once publication).
         """
-        added = [item.key for item in to_mark if not self._store.contains(item.key)]
-        dirty = bool(added) or self._store.is_new
-        self._store.add(added)
+        added = [item.key for item in to_mark if not self.store.contains(item.key)]
+        dirty = bool(added) or self.store.is_new
+        self.store.add(added)
 
         if hold_validators:
-            # keep the old validators so the next poll gets a full 200 and can
-            # continue the trickle instead of being stranded behind a 304
+            # the stored validators are cleared, not kept: the next poll has to
+            # get the full document to continue the trickle, and a server may
+            # answer 304 for a validator it still considers current (a coarse
+            # Last-Modified, or a 200 served with an unchanged ETag)
             _LOGGER.debug(
-                "Holding back cache validators of %s while a backlog is pending",
-                self.url,
+                "Clearing cache validators of %s while a backlog is pending", self.url
             )
-        else:
-            dirty = dirty or (result.etag, result.last_modified) != (
-                self._store.etag,
-                self._store.last_modified,
-            )
-            self._store.etag = result.etag
-            self._store.last_modified = result.last_modified
+        wanted = (
+            (None, None) if hold_validators else (result.etag, result.last_modified)
+        )
+        dirty = dirty or wanted != (self.store.etag, self.store.last_modified)
+        self.store.etag, self.store.last_modified = wanted
 
         if dirty:
-            await self._store.async_save()
+            await self.store.async_save()
 
     def _mark_recovered(self) -> None:
         """Flag this poll as successful before any item is published.
@@ -265,15 +249,6 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
             ATTR_SUMMARY_PLAIN: item.summary_plain,
             ATTR_PUBLISHED: item.published.isoformat() if item.published else None,
         }
-
-    def _data(self, new_items: list[FeedItem], pending: int) -> FeedData:
-        """Wrap the outcome of a poll together with the current feed meta."""
-        return FeedData(
-            new_items=new_items,
-            feed_title=self.feed_title,
-            feed_link=self.feed_link,
-            pending=pending,
-        )
 
     def _split_batch(
         self, unseen: list[FeedItem]

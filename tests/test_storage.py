@@ -3,6 +3,7 @@
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+import pytest
 
 from custom_components.rss_notify.const import MAX_SEEN_KEYS, STORAGE_VERSION
 from custom_components.rss_notify.storage import SeenStore, storage_key
@@ -41,7 +42,32 @@ async def test_load_empty(hass: HomeAssistant, hass_storage: dict[str, Any]) -> 
     assert store.etag is None
     assert store.last_modified is None
     assert store.contains("post-1") is False
-    assert store.path.endswith(STORE_KEY)
+
+
+async def test_files_are_written_and_read_as_schema_version_one(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """The on-disk schema is version 1, spelled out rather than imported.
+
+    Bumping `STORAGE_VERSION` without adding a migration would make `Store`
+    raise `NotImplementedError` on every file written by an earlier release, so
+    the version is pinned here: a bump has to fail this test on purpose.
+    """
+    assert STORAGE_VERSION == 1
+    hass_storage[STORE_KEY] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": STORE_KEY,
+        "data": {"seen": ["post-1"], "etag": None, "last_modified": None},
+    }
+
+    store = SeenStore(hass, ENTRY_ID)
+    await store.async_load()
+    store.add(["post-2"])
+    await store.async_save()
+
+    assert store.contains("post-1") is True
+    assert hass_storage[STORE_KEY]["version"] == 1
 
 
 async def test_load_existing(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
@@ -181,6 +207,29 @@ async def test_touching_all_keys_keeps_the_seen_set_at_its_size(
     assert store.seen_count == 2
     assert store.contains("post-1") is True
     assert store.contains("post-2") is True
+
+
+async def test_prune_never_drops_a_key_the_feed_still_lists(
+    hass: HomeAssistant, hass_storage: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A document larger than the cap keeps all of its keys, so nothing repeats.
+
+    Pruning to the cap regardless would drop keys of items the document still
+    lists, and the next poll would announce those items again - forever.
+    """
+    monkeypatch.setattr("custom_components.rss_notify.storage.MAX_SEEN_KEYS", 3)
+    seed(hass_storage, ["gone-1", "gone-2"])
+
+    store = SeenStore(hass, ENTRY_ID)
+    await store.async_load()
+    listed = ["post-1", "post-2", "post-3", "post-4"]
+    store.touch(listed)
+    store.add(listed)
+    await store.async_save()
+
+    # the cap is 3, yet all four listed keys survive; only dropped ones go
+    assert hass_storage[STORE_KEY]["data"]["seen"] == listed
+    assert all(store.contains(key) for key in listed)
 
 
 async def test_save_at_cap_does_not_prune(

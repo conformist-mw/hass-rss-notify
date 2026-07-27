@@ -38,29 +38,11 @@ class SeenStore:
         )
         # a dict is used as an insertion-ordered set with O(1) lookups
         self._seen: dict[str, None] = {}
-        self._etag: str | None = None
-        self._last_modified: str | None = None
+        # the conditional-GET validators to persist on the next save
+        self.etag: str | None = None
+        self.last_modified: str | None = None
+        self._listed: set[str] = set()
         self._is_new = True
-
-    @property
-    def etag(self) -> str | None:
-        """Return the stored ETag validator, if any."""
-        return self._etag
-
-    @etag.setter
-    def etag(self, value: str | None) -> None:
-        """Set the ETag validator to persist on the next save."""
-        self._etag = value
-
-    @property
-    def last_modified(self) -> str | None:
-        """Return the stored Last-Modified validator, if any."""
-        return self._last_modified
-
-    @last_modified.setter
-    def last_modified(self, value: str | None) -> None:
-        """Set the Last-Modified validator to persist on the next save."""
-        self._last_modified = value
 
     @property
     def is_new(self) -> bool:
@@ -76,11 +58,6 @@ class SeenStore:
         """Return the number of keys currently in the seen-set."""
         return len(self._seen)
 
-    @property
-    def path(self) -> str:
-        """Return the path of the backing storage file."""
-        return self._store.path
-
     async def async_load(self) -> None:
         """Load the persisted state, replacing anything held in memory."""
         data = await self._store.async_load()
@@ -88,8 +65,8 @@ class SeenStore:
         if data is None:
             data = {}
         self._seen = dict.fromkeys(data.get(_DATA_SEEN) or ())
-        self._etag = data.get(_DATA_ETAG)
-        self._last_modified = data.get(_DATA_LAST_MODIFIED)
+        self.etag = data.get(_DATA_ETAG)
+        self.last_modified = data.get(_DATA_LAST_MODIFIED)
 
     def contains(self, key: str) -> bool:
         """Return True when the item key was already seen."""
@@ -101,14 +78,19 @@ class SeenStore:
             self._seen.setdefault(key, None)
 
     def touch(self, keys: Iterable[str]) -> None:
-        """Move keys that are already known to the newest end of the set.
+        """Record the keys the feed currently lists as the newest ones.
 
         Keys the feed still lists have to outlive the ones it has dropped:
         pruning removes the oldest keys, and dropping the key of an item that is
-        still in the document would announce that item a second time. Keys that
-        are not in the seen-set are ignored - they are not seen yet.
+        still in the document would announce that item a second time. Known keys
+        are therefore moved to the newest end of the set, and pruning skips them
+        altogether - a document holding more items than the cap would otherwise
+        keep pruning items it still lists. Keys that are not in the seen-set are
+        ignored: they are not seen yet.
         """
+        self._listed = set()
         for key in keys:
+            self._listed.add(key)
             if key in self._seen:
                 del self._seen[key]
                 self._seen[key] = None
@@ -119,8 +101,8 @@ class SeenStore:
         await self._store.async_save(
             {
                 _DATA_SEEN: list(self._seen),
-                _DATA_ETAG: self._etag,
-                _DATA_LAST_MODIFIED: self._last_modified,
+                _DATA_ETAG: self.etag,
+                _DATA_LAST_MODIFIED: self.last_modified,
             }
         )
         self._is_new = False
@@ -129,8 +111,9 @@ class SeenStore:
         """Delete the storage file of this feed and forget its state."""
         await self._store.async_remove()
         self._seen = {}
-        self._etag = None
-        self._last_modified = None
+        self._listed = set()
+        self.etag = None
+        self.last_modified = None
         self._is_new = True
 
     def _prune(self) -> None:
@@ -138,5 +121,8 @@ class SeenStore:
         excess = len(self._seen) - MAX_SEEN_KEYS
         if excess <= 0:
             return
-        _LOGGER.debug("Pruning %s seen keys from %s", excess, self._store.key)
-        self._seen = dict.fromkeys(islice(self._seen, excess, None))
+        stale = [key for key in self._seen if key not in self._listed]
+        dropped = list(islice(stale, excess))
+        _LOGGER.debug("Pruning %s seen keys from %s", len(dropped), self._store.key)
+        for key in dropped:
+            del self._seen[key]

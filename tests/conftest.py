@@ -17,10 +17,10 @@ from pytest_homeassistant_custom_component.common import (
 )
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
+from custom_components.rss_notify import client
 from custom_components.rss_notify.const import (
     CONF_INITIAL_ITEMS,
     CONF_MAX_ITEMS_PER_POLL,
-    CONF_NAME,
     CONF_UPDATE_INTERVAL,
     CONF_URL,
     DEFAULT_INITIAL_ITEMS,
@@ -42,6 +42,13 @@ LAST_MODIFIED = "Fri, 24 Jul 2026 12:00:00 GMT"
 OTHER_FEED_URL = "https://other.example.com/feed.xml"
 OTHER_FEED_TITLE = "Other Blog"
 
+# the options every entry is created with, as the config flow writes them
+DEFAULT_OPTIONS = {
+    CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
+    CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
+    CONF_MAX_ITEMS_PER_POLL: DEFAULT_MAX_ITEMS_PER_POLL,
+}
+
 
 def load_feed(name: str) -> bytes:
     """Return the raw bytes of a feed fixture from `tests/fixtures`."""
@@ -56,25 +63,28 @@ def auto_enable_custom_integrations(
     yield
 
 
+@pytest.fixture(autouse=True)
+def forget_logged_feed_problems() -> Generator[None]:
+    """Reset the client's "already warned" set so log tests do not interfere."""
+    client._WARNED.clear()
+    yield
+    client._WARNED.clear()
+
+
 def make_config_entry(
-    *, name: str | None = FEED_TITLE, url: str = FEED_URL, **options: int
+    *, title: str = FEED_TITLE, url: str = FEED_URL, **options: int
 ) -> MockConfigEntry:
     """Return a config entry for one feed, with default options plus overrides.
 
-    `name` is the name configured for the feed; `None` leaves it unset, as an
-    entry created before the config flow started storing one would be.
+    The entry title is the feed's name: the config flow stores it there and
+    nowhere else, so it is what the coordinator, the device and the payload use.
     """
     return MockConfigEntry(
         domain=DOMAIN,
-        title=name or url,
+        title=title,
         unique_id=url,
-        data={CONF_URL: url} | ({CONF_NAME: name} if name is not None else {}),
-        options={
-            CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
-            CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
-            CONF_MAX_ITEMS_PER_POLL: DEFAULT_MAX_ITEMS_PER_POLL,
-            **options,
-        },
+        data={CONF_URL: url},
+        options={**DEFAULT_OPTIONS, **options},
     )
 
 

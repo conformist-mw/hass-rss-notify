@@ -4,8 +4,9 @@ from typing import Final
 
 DOMAIN: Final = "rss_notify"
 
-# Config entry data keys
+# Config entry data key
 CONF_URL: Final = "url"
+# config flow field only: the name is stored as the entry title, not in the data
 CONF_NAME: Final = "name"
 
 # Config entry option keys
@@ -18,8 +19,9 @@ DEFAULT_UPDATE_INTERVAL: Final = 5  # minutes
 DEFAULT_INITIAL_ITEMS: Final = 1
 DEFAULT_MAX_ITEMS_PER_POLL: Final = 10  # 0 = unlimited
 
-# Fetching
+# Fetching (both fixed, not exposed as options)
 DEFAULT_TIMEOUT: Final = 30  # seconds
+MAX_FEED_BYTES: Final = 16 * 1024 * 1024  # a feed document larger than this is refused
 
 # Persistent seen-store
 STORAGE_VERSION: Final = 1

@@ -13,7 +13,6 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
@@ -36,6 +35,7 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
 )
+from .redact import redact_url
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -108,10 +108,10 @@ class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
             try:
                 feed_title = await self._async_validate_feed(url)
             except FeedFetchError as err:
-                _LOGGER.debug("Cannot connect to feed %s: %s", url, err)
+                _LOGGER.debug("Cannot connect to feed %s: %s", redact_url(url), err)
                 errors["base"] = "cannot_connect"
             except FeedParseError as err:
-                _LOGGER.debug("Feed %s is not usable: %s", url, err)
+                _LOGGER.debug("Feed %s is not usable: %s", redact_url(url), err)
                 errors["base"] = "invalid_feed"
             else:
                 name = (
@@ -119,9 +119,12 @@ class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
                     or feed_title
                     or _fallback_name(url)
                 )
+                # the name lives in the entry title only: HA keeps that in step
+                # with a rename in the UI, and the coordinator reads it from
+                # there, so the two can never drift apart
                 return self.async_create_entry(
                     title=name,
-                    data={CONF_URL: url, CONF_NAME: name},
+                    data={CONF_URL: url},
                     options={
                         CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
                         CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
@@ -139,10 +142,12 @@ class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _async_validate_feed(self, url: str) -> str:
         """Return the title of the feed at `url`, raising when it is unusable."""
-        result = await async_fetch_feed(async_get_clientsession(self.hass), url)
+        result = await async_fetch_feed(self.hass, url)
         if isinstance(result, NotModified):
             # unreachable in practice: the flow never sends cache validators
-            raise FeedParseError(f"Unexpected 'not modified' response from {url}")
+            raise FeedParseError(
+                f"Unexpected 'not modified' response from {redact_url(url)}"
+            )
         return result.feed_title
 
 

@@ -107,7 +107,8 @@ async def test_item_text_is_truncated_in_the_attributes(
     attributes = hass.states.get(event_entity_id(hass, entry)).attributes
     assert attributes[ATTR_SUMMARY] == full[ATTR_SUMMARY][:ATTR_MAX_LENGTH]
     assert attributes[ATTR_SUMMARY_PLAIN] == full[ATTR_SUMMARY_PLAIN][:ATTR_MAX_LENGTH]
-    assert len(attributes[ATTR_SUMMARY]) == ATTR_MAX_LENGTH
+    # the documented cap, spelled out: importing it would assert it against itself
+    assert len(attributes[ATTR_SUMMARY]) == 500
     # short fields are passed through untouched
     assert attributes[ATTR_TITLE] == full[ATTR_TITLE]
     assert attributes[ATTR_ITEM_ID] == "post-1"
