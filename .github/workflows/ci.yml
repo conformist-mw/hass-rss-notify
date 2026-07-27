@@ -70,5 +70,8 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
-          # the integration is not (yet) registered in home-assistant/brands
+          # This check asks brands.home-assistant.io whether the domain is
+          # registered, and it never will be: home-assistant/brands stopped
+          # accepting icons for custom integrations, which now ship their own
+          # under `custom_components/rss_notify/brand/`. The ignore is permanent.
           ignore: brands

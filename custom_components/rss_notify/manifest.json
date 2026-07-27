@@ -8,5 +8,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/conformist-mw/hass-rss-notify/issues",
   "requirements": ["feedparser>=6.0.11"],
-  "version": "0.2.0"
+  "version": "0.3.0"
 }

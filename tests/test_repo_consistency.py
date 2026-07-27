@@ -75,3 +75,28 @@ def test_the_english_translations_match_the_strings_file() -> None:
     english = (INTEGRATION / "translations" / "en.json").read_bytes()
 
     assert strings == english
+
+
+def test_the_icon_ships_where_home_assistant_looks_for_it() -> None:
+    """The brand directory is named and shaped the way core resolves it.
+
+    Home Assistant serves a custom integration's own icon from
+    `<integration>/brand/` and decides whether to look at all by testing for a
+    top-level entry named exactly `brand` (`Integration.has_branding`), so the
+    directory name is load-bearing: renaming it, or moving the artwork out of the
+    integration, silently takes the icon away everywhere in the UI. `icon.png` is
+    the one file that must exist - the resolver falls back to it for `logo` and
+    for the `@2x` variants.
+    """
+    brand = INTEGRATION / "brand"
+    icon = brand / "icon.png"
+
+    assert brand.is_dir(), "the icon has to live inside the integration"
+    assert icon.is_file()
+    # a PNG header carries the dimensions in the IHDR chunk: 8 byte signature,
+    # then 4 length + 4 type, then width and height as big-endian uint32
+    header = icon.read_bytes()[:24]
+    assert header.startswith(b"\x89PNG\r\n\x1a\n")
+    width = int.from_bytes(header[16:20], "big")
+    height = int.from_bytes(header[20:24], "big")
+    assert (width, height) == (256, 256), f"{width}x{height}"

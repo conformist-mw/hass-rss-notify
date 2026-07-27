@@ -1,16 +1,20 @@
-"""Draw the brand icon this integration is published under.
+"""Draw the brand icon of this integration into `custom_components/*/brand`.
 
-The icons live in `home-assistant/brands`, not in this repository - Home
-Assistant and HACS load them from `brands.home-assistant.io`, so a PNG shipped
-here would never be displayed. This script is kept so the artwork can be
-regenerated (a dark variant, a retina size, a colour change) instead of being
-re-drawn by hand, and `icon.png` / `icon@2x.png` next to it are exactly what was
-submitted. See `README.md` in this directory.
+The icon ships *inside* the integration. Since 2026.3 Home Assistant serves a
+custom integration's own brand images from `<integration>/brand/` over
+`/api/brands/integration/<domain>/<image>`, ahead of the `brands.home-assistant.io`
+CDN, and `home-assistant/brands` no longer accepts icons for custom integrations
+at all - a pull request adding one there is closed automatically.
 
-Pillow is the only requirement and it is a development-only one, deliberately
-not added to `requirements_test.txt`:
+`icon.png` is the only file that has to exist: the core resolver falls back along
+`logo@2x -> logo -> icon` and `icon@2x -> icon`, so the two files written here
+answer every request the frontend makes. Dark variants would go beside them under
+the names `dark_icon.png` / `dark_logo.png`; white on orange needs none.
 
-    pip install pillow && python brand/make_icons.py
+Pillow is the only requirement and it is a development-only one, deliberately not
+added to `requirements_test.txt`:
+
+    pip install pillow && python scripts/make_icons.py
 
 The artwork is drawn at eight times the target size and downsampled, which is
 what smooths its edges - `ImageDraw` anti-aliases nothing on its own.
@@ -25,7 +29,12 @@ from PIL import Image, ImageDraw
 CANVAS: Final = 256
 SUPERSAMPLE: Final = 8
 
-# brands asks for a 256x256 `icon.png` and a 512x512 `icon@2x.png`
+# the directory has to be named exactly `brand`: `Integration.has_branding` is a
+# lookup of that name among the integration's top-level files
+BRAND_DIR: Final = Path("custom_components/rss_notify/brand")
+
+# the sizes the brands CDN uses, kept for a custom integration's own copies too:
+# a 256x256 icon and a 512x512 retina variant
 SIZES: Final = {"icon.png": 256, "icon@2x.png": 512}
 
 CORNER_RADIUS: Final = 56
@@ -135,8 +144,7 @@ def draw_icon() -> Image.Image:
 
     The broadcast mark says "feed" at a glance and the badge says the feed is
     watched, which is the whole integration. Nothing here borrows Home Assistant
-    branding: brands forbids that for a custom integration, since it would read
-    as an official one.
+    branding - that would read as an official integration.
     """
     icon = _tile()
     draw = ImageDraw.Draw(icon)
@@ -155,12 +163,13 @@ def draw_icon() -> Image.Image:
 
 
 def main() -> None:
-    """Write every size brands asks for next to this script."""
+    """Write every size into the integration's brand directory."""
     icon = draw_icon()
-    here = Path(__file__).parent
+    brand_dir = Path(__file__).parents[1] / BRAND_DIR
+    brand_dir.mkdir(parents=True, exist_ok=True)
     for filename, size in SIZES.items():
         icon.resize((size, size), Image.LANCZOS).save(
-            here / filename, format="PNG", optimize=True
+            brand_dir / filename, format="PNG", optimize=True
         )
 
 
