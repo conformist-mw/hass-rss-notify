@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Final
 from urllib.parse import urlsplit
 
 from homeassistant.config_entries import (
@@ -105,10 +105,24 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
     }
 )
 
+DEFAULT_OPTIONS: Final = {
+    CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
+    CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
+    CONF_MAX_ITEMS_PER_POLL: DEFAULT_MAX_ITEMS_PER_POLL,
+}
+
 # `CONF_NAME` is a form field only: the name it collects is stored as the entry
-# title, never in `entry.data`. It is optional so that clearing the pre-filled
-# suggestion falls back to it rather than failing the form.
-STEP_NAME_DATA_SCHEMA = vol.Schema({vol.Optional(CONF_NAME): TextSelector()})
+# title, never in `entry.data`. Every field of this step is optional so that
+# clearing one falls back to what it was pre-filled with - the suggested name,
+# or the default of that option - rather than failing the form.
+STEP_NAME_DATA_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_NAME): TextSelector(),
+        vol.Optional(CONF_UPDATE_INTERVAL): _number_field(1),
+        vol.Optional(CONF_INITIAL_ITEMS): _number_field(0),
+        vol.Optional(CONF_MAX_ITEMS_PER_POLL): _number_field(0),
+    }
+)
 
 OPTIONS_SCHEMA = vol.Schema(
     {
@@ -177,27 +191,44 @@ class RssNotifyConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_name(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Name the validated feed, offering the feed's own title as the value."""
+        """Name the validated feed and set its polling options.
+
+        The name is offered as the feed's own title, the options as their
+        defaults, so accepting the form is a complete answer. Folding the options
+        in here rather than into a third step keeps adding a feed at two forms;
+        this step has to exist anyway, because the name to suggest is only known
+        once the feed has been fetched.
+        """
+        suggested: dict[str, Any] = {
+            CONF_NAME: self._suggested_name,
+            **DEFAULT_OPTIONS,
+        }
+        errors: dict[str, str] = {}
+
         if user_input is not None:
+            # a cleared field is simply absent, so the pre-filled value it is
+            # merged over stands
+            suggested |= user_input
             name = (user_input.get(CONF_NAME) or "").strip() or self._suggested_name
-            # the name lives in the entry title only: HA keeps that in step with
-            # a rename in the UI, and the coordinator reads it from there, so the
-            # two can never drift apart
-            return self.async_create_entry(
-                title=name,
-                data={CONF_URL: self._url},
-                options={
-                    CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
-                    CONF_INITIAL_ITEMS: DEFAULT_INITIAL_ITEMS,
-                    CONF_MAX_ITEMS_PER_POLL: DEFAULT_MAX_ITEMS_PER_POLL,
-                },
+            options, errors = _whole_numbers(
+                {key: value for key, value in user_input.items() if key != CONF_NAME}
             )
+            if not errors:
+                # the name lives in the entry title only: HA keeps that in step
+                # with a rename in the UI, and the coordinator reads it from
+                # there, so the two can never drift apart
+                return self.async_create_entry(
+                    title=name,
+                    data={CONF_URL: self._url},
+                    options={**DEFAULT_OPTIONS, **options},
+                )
 
         return self.async_show_form(
             step_id="name",
             data_schema=self.add_suggested_values_to_schema(
-                STEP_NAME_DATA_SCHEMA, {CONF_NAME: self._suggested_name}
+                STEP_NAME_DATA_SCHEMA, suggested
             ),
+            errors=errors,
             # no URL among them: the step's text is rendered in the UI, and a feed
             # URL commonly carries userinfo or an access token
             description_placeholders={"item_count": str(self._item_count)},

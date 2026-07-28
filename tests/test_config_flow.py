@@ -108,8 +108,12 @@ async def test_user_flow_creates_entry(
 
     form = await _submit_url(hass, flow_id, f"  {FEED_URL}  ")
 
-    # this is the point of the second step: the name arrives filled in
-    assert suggested_values(form["data_schema"]) == {CONF_NAME: "Example Blog"}
+    # this is the point of the second step: the name arrives filled in, and the
+    # polling options along with it, so accepting the form is a complete answer
+    assert suggested_values(form["data_schema"]) == {
+        CONF_NAME: "Example Blog",
+        **DEFAULT_OPTIONS,
+    }
     assert form["description_placeholders"] == {"item_count": "3"}
 
     result = await hass.config_entries.flow.async_configure(
@@ -163,6 +167,89 @@ async def test_a_cleared_name_keeps_the_suggestion(
     assert result["title"] == "Example Blog"
 
 
+async def test_the_add_flow_stores_the_polling_options(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Options set while adding the feed are the ones the entry is created with."""
+    aioclient_mock.get(FEED_URL, content=load_feed("feed_basic"))
+    flow_id = await _start_flow(hass)
+    await _submit_url(hass, flow_id)
+
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {
+            CONF_NAME: "Example Blog",
+            CONF_UPDATE_INTERVAL: 15,
+            CONF_INITIAL_ITEMS: 0,
+            CONF_MAX_ITEMS_PER_POLL: 0,
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    # a number selector yields floats; whole numbers are stored
+    assert result["options"] == {
+        CONF_UPDATE_INTERVAL: 15,
+        CONF_INITIAL_ITEMS: 0,
+        CONF_MAX_ITEMS_PER_POLL: 0,
+    }
+    assert all(isinstance(value, int) for value in result["options"].values())
+
+
+async def test_a_cleared_option_falls_back_to_its_default(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """An option field left empty is created with the default, not left unset.
+
+    The fields are optional so that clearing one is not a form error, which means
+    a cleared field arrives as a missing key rather than as a value.
+    """
+    aioclient_mock.get(FEED_URL, content=load_feed("feed_basic"))
+    flow_id = await _start_flow(hass)
+    await _submit_url(hass, flow_id)
+
+    result = await hass.config_entries.flow.async_configure(
+        flow_id, {CONF_UPDATE_INTERVAL: 15}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"] == {**DEFAULT_OPTIONS, CONF_UPDATE_INTERVAL: 15}
+
+
+async def test_the_add_flow_rejects_a_fractional_option(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A fraction fails the name step instead of creating a feed with a truncated cap.
+
+    `max_items_per_poll: 0.9` truncated is `0`, which means *unlimited*. The form
+    comes back with the error on that field and keeps the rest of what was typed,
+    the name included.
+    """
+    aioclient_mock.get(FEED_URL, content=load_feed("feed_basic"))
+    flow_id = await _start_flow(hass)
+    await _submit_url(hass, flow_id)
+
+    result = await hass.config_entries.flow.async_configure(
+        flow_id, {CONF_NAME: "My feed", CONF_MAX_ITEMS_PER_POLL: 0.9}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "name"
+    assert result["errors"] == {CONF_MAX_ITEMS_PER_POLL: "not_a_whole_number"}
+    assert suggested_values(result["data_schema"]) == {
+        **DEFAULT_OPTIONS,
+        CONF_NAME: "My feed",
+        CONF_MAX_ITEMS_PER_POLL: 0.9,
+    }
+    assert not hass.config_entries.async_entries(DOMAIN)
+
+    result = await hass.config_entries.flow.async_configure(
+        flow_id, {CONF_NAME: "My feed", CONF_MAX_ITEMS_PER_POLL: 1}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"] == {**DEFAULT_OPTIONS, CONF_MAX_ITEMS_PER_POLL: 1}
+
+
 @pytest.mark.parametrize(
     ("url", "expected_title"),
     [
@@ -187,7 +274,7 @@ async def test_user_flow_falls_back_to_the_feed_host_as_title(
 
     form = await _submit_url(hass, flow_id, url)
 
-    assert suggested_values(form["data_schema"]) == {CONF_NAME: expected_title}
+    assert suggested_values(form["data_schema"])[CONF_NAME] == expected_title
 
     result = await hass.config_entries.flow.async_configure(flow_id, {})
 

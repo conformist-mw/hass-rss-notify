@@ -13,18 +13,25 @@
       },
       "name": {
         "title": "Name the feed",
-        "description": "The feed was fetched and parsed. Items found: {item_count}.",
+        "description": "The feed was fetched and parsed. Items found: {item_count}. The polling options below can be changed later under Configure.",
         "data": {
-          "name": "Name"
+          "name": "Name",
+          "update_interval": "Update interval (minutes)",
+          "initial_items": "Initial items",
+          "max_items_per_poll": "Maximum items per poll"
         },
         "data_description": {
-          "name": "Pre-filled with the title the feed reports, or with the host of the URL when it reports none. Edit it to taste; clearing it keeps the suggestion. This becomes the name of the feed everywhere: the entry, the device, the entity and the feed title in every event. You can rename it later in the UI."
+          "name": "Pre-filled with the title the feed reports, or with the host of the URL when it reports none. Edit it to taste; clearing it keeps the suggestion. This becomes the name of the feed everywhere: the entry, the device, the entity and the feed title in every event. You can rename it later in the UI.",
+          "update_interval": "How often the feed is polled.",
+          "initial_items": "How many of the newest items to announce when the feed is first added. 0 announces nothing. Not limited by the maximum items per poll.",
+          "max_items_per_poll": "Maximum number of items announced per regular poll. Remaining items are announced on later polls, but they are not queued: an item that drops out of the feed before a later poll reaches it is never announced. 0 means unlimited. The first poll after adding a feed ignores this and announces the initial items."
         }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect to the feed URL.",
-      "invalid_feed": "The URL did not return a valid RSS or Atom feed."
+      "invalid_feed": "The URL did not return a valid RSS or Atom feed.",
+      "not_a_whole_number": "Enter a whole number."
     },
     "abort": {
       "already_configured": "This feed is already configured."

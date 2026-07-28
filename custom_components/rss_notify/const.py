@@ -14,7 +14,9 @@ CONF_INITIAL_ITEMS: Final = "initial_items"
 CONF_MAX_ITEMS_PER_POLL: Final = "max_items_per_poll"
 
 # Option defaults
-DEFAULT_UPDATE_INTERVAL: Final = 5  # minutes
+# an unchanged poll is cheap with a conditional GET, not free, and a feed is
+# read a few times a day, not 288; anyone who wants minutes can set them
+DEFAULT_UPDATE_INTERVAL: Final = 60  # minutes
 DEFAULT_INITIAL_ITEMS: Final = 1
 DEFAULT_MAX_ITEMS_PER_POLL: Final = 10  # 0 = unlimited
 
