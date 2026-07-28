@@ -13,6 +13,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import RssNotifyConfigEntry
 from .const import (
+    ATTR_IMAGE,
     ATTR_MAX_LENGTH,
     ATTR_SUMMARY,
     ATTR_SUMMARY_PLAIN,
@@ -76,8 +77,18 @@ class RssFeedEventEntity(CoordinatorEntity[RssFeedCoordinator], EventEntity):
 
 
 def _event_attributes(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return the event payload with its long text fields truncated."""
+    """Return the event payload with its long text fields truncated.
+
+    The image is the one URL among them and is *dropped* rather than cut when it
+    passes the same limit: a URL truncated at 500 characters is not a shorter
+    URL, it is a broken one, and an automation that sends it gets a failed
+    download instead of a photo. What the entity offers is either usable or
+    absent. The bus event carries it whole either way.
+    """
     attributes = dict(payload)
     for key in TRUNCATED_ATTRS:
         attributes[key] = attributes[key][:ATTR_MAX_LENGTH]
+    image = attributes[ATTR_IMAGE]
+    if image is not None and len(image) > ATTR_MAX_LENGTH:
+        attributes[ATTR_IMAGE] = None
     return attributes

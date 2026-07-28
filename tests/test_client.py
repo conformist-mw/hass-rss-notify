@@ -224,6 +224,58 @@ async def test_key_falls_back_to_fingerprint_and_skips_unidentifiable(
     assert "without any usable identity" in caplog.text
 
 
+async def _images(hass: HomeAssistant) -> dict[str, str | None]:
+    """Return the extracted image of every item of the images fixture, by key."""
+    result = await async_parse_feed(hass, load_feed("feed_images"), FEED_URL)
+    return {item.key: item.image for item in result.items}
+
+
+async def test_the_item_image_is_taken_from_the_first_source_that_has_one(
+    hass: HomeAssistant,
+) -> None:
+    """An image/* enclosure, then Media RSS, then the summary's first <img>.
+
+    Feeds in the wild use all three, so the order is what decides: the fixture's
+    first item offers all of them and must answer with the enclosure, and the
+    YouTube shape (a thumbnail beside a video) must answer with the thumbnail
+    rather than with the clip.
+    """
+    images = await _images(hass)
+
+    assert images["enclosure-image"] == "https://cdn.example.com/enclosure.jpg"
+    assert images["media-thumbnail"] == "https://cdn.example.com/thumb.jpg"
+    assert images["media-content-medium"] == "https://cdn.example.com/medium.jpg"
+    assert images["media-content-type"] == "https://cdn.example.com/typed.png"
+    # neither medium nor type: nothing says it is not a picture
+    assert images["media-content-bare"] == "https://cdn.example.com/bare.jpg"
+    # the summary is HTML, so its entities are unescaped on the way out
+    assert images["summary-img"] == "https://cdn.example.com/in-summary.jpg?w=1&h=2"
+    # an <img> without a src does not end the search
+    assert images["summary-img-no-src"] == "https://cdn.example.com/second.jpg"
+
+
+async def test_an_item_without_a_usable_image_reports_none(
+    hass: HomeAssistant,
+) -> None:
+    """Nothing is substituted, and only an absolute http(s) URL counts.
+
+    A placeholder would be worse than the empty field: an automation could not
+    tell it from a real picture. A relative or protocol-relative `src` has no
+    base to be resolved against here, and a `data:` URI would carry the whole
+    picture into every payload and into the recorder.
+    """
+    images = await _images(hass)
+
+    assert images["no-image"] is None
+    # an enclosure is not a picture just because it is an enclosure
+    assert images["enclosure-audio"] is None
+    # a declared kind is believed
+    assert images["media-content-video"] is None
+    assert images["summary-img-relative"] is None
+    assert images["summary-img-protocol-relative"] is None
+    assert images["summary-img-data-uri"] is None
+
+
 async def test_sort_items_oldest_first(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from calendar import timegm
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
@@ -39,6 +39,9 @@ _READ_CHUNK_BYTES: Final = 64 * 1024
 
 _TAG_RE: Final = re.compile(r"<[^>]+>")
 _WHITESPACE_RE: Final = re.compile(r"\s+")
+_IMG_SRC_RE: Final = re.compile(
+    r"""<img\b[^>]*?\bsrc\s*=\s*["'](?P<src>[^"']+)["']""", re.IGNORECASE
+)
 
 # a feed problem does not heal between polls, so the same warning would repeat
 # for as long as the feed is configured; see `_log_feed_problem`
@@ -67,6 +70,7 @@ class FeedItem:
     summary: str
     summary_plain: str
     published: datetime | None
+    image: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,7 +301,54 @@ def _normalize_entry(entry: Any, url: str) -> FeedItem | None:
         summary=summary,
         summary_plain=to_plain_text(summary),
         published=_entry_published(entry),
+        image=_entry_image(entry, summary=summary),
     )
+
+
+def _entry_image(entry: Any, summary: str) -> str | None:
+    """Return the item's picture, or None when the entry carries none usable.
+
+    The first *usable* candidate wins, and only an absolute http(s) URL is
+    usable: a relative or protocol-relative `src` has no base a notification
+    could resolve it against, and a `data:` URI would carry the whole picture
+    into every payload and into the recorder.
+
+    Nothing is substituted when a feed offers no image. A placeholder would be
+    worse than the empty field, because an automation cannot tell one from a
+    real picture, while `None` lets it choose between sending a photo and
+    sending text.
+    """
+    for candidate in _image_candidates(entry, summary):
+        url = html.unescape(candidate).strip()
+        if _is_http_url(url):
+            return url
+    return None
+
+
+def _image_candidates(entry: Any, summary: str) -> Iterator[str]:
+    """Yield the image URLs an entry offers, best source first."""
+    for enclosure in entry.get("enclosures") or ():
+        # the only enclosure kind that is a picture; a podcast episode or a PDF
+        # attachment is an enclosure too
+        if str(enclosure.get("type") or "").startswith("image/"):
+            yield str(enclosure.get("href") or "")
+
+    # Media RSS, what YouTube and most news feeds carry. A thumbnail is a
+    # picture by definition; `media:content` is also used for video and audio,
+    # so a declared kind is believed and only an undeclared one is assumed to be
+    # an image.
+    for thumbnail in entry.get("media_thumbnail") or ():
+        yield str(thumbnail.get("url") or "")
+    for content in entry.get("media_content") or ():
+        medium = str(content.get("medium") or "")
+        mime = str(content.get("type") or "")
+        if medium == "image" or mime.startswith("image/") or not (medium or mime):
+            yield str(content.get("url") or "")
+
+    # last resort: the publisher's own HTML. An <img> without a `src` is skipped
+    # rather than ending the search, so a lead image below a spacer is found.
+    for match in _IMG_SRC_RE.finditer(summary):
+        yield match.group("src")
 
 
 def _item_key(

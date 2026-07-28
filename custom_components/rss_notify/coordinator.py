@@ -28,6 +28,7 @@ from .const import (
     ATTR_ENTRY_ID,
     ATTR_FEED_TITLE,
     ATTR_FEED_URL,
+    ATTR_IMAGE,
     ATTR_ITEM_ID,
     ATTR_LINK,
     ATTR_PUBLISHED,
@@ -236,6 +237,7 @@ class RssFeedCoordinator(TimestampDataUpdateCoordinator[FeedData]):
             ATTR_SUMMARY: item.summary,
             ATTR_SUMMARY_PLAIN: item.summary_plain,
             ATTR_PUBLISHED: item.published.isoformat() if item.published else None,
+            ATTR_IMAGE: item.image,
         }
 
     def _drop_repeated_keys(self, items: list[FeedItem]) -> list[FeedItem]:

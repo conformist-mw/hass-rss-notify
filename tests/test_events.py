@@ -31,6 +31,7 @@ from custom_components.rss_notify.const import (
     ATTR_ENTRY_ID,
     ATTR_FEED_TITLE,
     ATTR_FEED_URL,
+    ATTR_IMAGE,
     ATTR_ITEM_ID,
     ATTR_LINK,
     ATTR_PUBLISHED,
@@ -88,6 +89,8 @@ async def test_bus_events_fired_per_item_in_order(
         ATTR_SUMMARY: "Body of post-1",
         ATTR_SUMMARY_PLAIN: "Body of post-1",
         ATTR_PUBLISHED: "2026-07-01T12:00:00+00:00",
+        # the generated feed ships no picture, and nothing is substituted for one
+        ATTR_IMAGE: None,
     }
 
 
@@ -121,6 +124,7 @@ async def test_event_contract_uses_the_documented_names(
         "summary",
         "summary_plain",
         "published",
+        "image",
     }
     assert events[0].data["item_id"] == "post-1"
 
@@ -368,14 +372,7 @@ def _readme_telegram_message() -> str:
     documented example against losing the item's own description again, and a
     copy kept in the test file would keep passing while the README drifted.
     """
-    readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
-    examples = [
-        yaml.safe_load(block)
-        for block in re.findall(r"```yaml\n(.*?)```", readme, re.DOTALL)
-        if "RSS to Telegram" in block
-    ]
-    assert len(examples) == 1, "the README's Telegram example moved or was duplicated"
-    send = examples[0]["actions"][0]["repeat"]["sequence"][0]
+    send = _readme_yaml("RSS to Telegram")["actions"][0]["repeat"]["sequence"][0]
     assert send["action"] == "telegram_bot.send_message"
     return send["data"]["message"]
 
@@ -451,3 +448,54 @@ async def test_the_documented_telegram_message_survives_awkward_descriptions(
     assert unexpected not in message
     # Telegram refuses a message over 4096 characters outright
     assert len(message) < 1000
+
+
+def _readme_yaml(marker: str) -> dict[str, Any]:
+    """Return the one README example whose YAML block mentions `marker`."""
+    readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    examples = [
+        yaml.safe_load(block)
+        for block in re.findall(r"```yaml\n(.*?)```", readme, re.DOTALL)
+        if marker in block
+    ]
+    assert len(examples) == 1, (
+        f"the README example for {marker!r} moved or was duplicated"
+    )
+    return examples[0]
+
+
+@pytest.mark.parametrize("has_image", [True, False], ids=["with-image", "without"])
+async def test_the_documented_picture_automation_branches_on_the_image(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+    has_image: bool,
+) -> None:
+    """The README's picture example sends a photo only when the item has one.
+
+    The example is parsed out of the README rather than transcribed, and it is
+    rendered against a real event payload: an automation that keyed on a field
+    the payload does not carry would read just as plausibly.
+    """
+    image = "https://cdn.example.com/lead.jpg"
+    entry = make_config_entry()
+    seed_store(hass_storage, entry.entry_id, ["already-seen"])
+    serve(
+        aioclient_mock, content=feed_bytes(["post-1"], image=image if has_image else "")
+    )
+    events = async_capture_events(hass, EVENT_NEW_ITEM)
+
+    await setup_entry(hass, entry)
+
+    payload = events[0].data
+    assert payload[ATTR_IMAGE] == (image if has_image else None)
+
+    branch = _readme_yaml("RSS picture to Telegram")["actions"][0]["choose"][0]
+    variables = {"trigger": {"event": {"data": payload}}}
+    assert Template(branch["conditions"], hass).async_render(variables) is has_image
+
+    send = branch["sequence"][0]
+    assert send["action"] == "telegram_bot.send_photo"
+    assert Template(send["data"]["url"], hass).async_render(
+        variables, parse_result=False
+    ) == (image if has_image else "None")
