@@ -57,27 +57,43 @@ def _fallback_name(url: str) -> str:
     return urlsplit(url).hostname or "RSS feed"
 
 
-def _whole_number(value: float) -> int:
-    """Return `value` as an `int`, rejecting anything with a fractional part.
+def _whole_numbers(
+    user_input: dict[str, Any],
+) -> tuple[dict[str, int], dict[str, str]]:
+    """Split submitted numbers into whole-number options and per-field errors.
 
     A number selector hands back a float and does not enforce its own `step`, so
-    a fraction would otherwise be truncated in silence - and truncation is not a
-    harmless rounding here: `max_items_per_poll: 0.9` would become `0`, which
-    means *unlimited*, the opposite of what such a value asks for.
+    without this check a fraction would be truncated in silence - and truncation
+    is not a harmless rounding here: `max_items_per_poll: 0.9` would become `0`,
+    which means *unlimited*, the opposite of what such a value asks for.
+
+    The check has to run in the step rather than in the schema.
+    `voluptuous_serialize.convert()` walks a `vol.All` chain and converts every
+    validator in it; a selector it can convert, a plain callable it cannot, and
+    it raises. A schema carrying one therefore cannot be rendered at all: the
+    frontend's request for the form answers 500 and the dialog never opens. That
+    is not specific to this check - no validator function may appear in a schema
+    that reaches the UI.
     """
-    number = float(value)
-    if not number.is_integer():
-        raise vol.Invalid("expected a whole number")
-    return int(number)
+    options: dict[str, int] = {}
+    errors: dict[str, str] = {}
+    for field, value in user_input.items():
+        number = float(value)
+        if number.is_integer():
+            options[field] = int(number)
+        else:
+            errors[field] = "not_a_whole_number"
+    return options, errors
 
 
-def _whole_number_field(minimum: int) -> vol.All:
-    """Return a whole-number field with `minimum` enforced by the schema."""
-    return vol.All(
-        NumberSelector(
-            NumberSelectorConfig(min=minimum, step=1, mode=NumberSelectorMode.BOX)
-        ),
-        _whole_number,
+def _number_field(minimum: int) -> NumberSelector:
+    """Return a number field with `minimum` enforced by the schema.
+
+    A bare selector, deliberately: everything the schema holds must survive
+    `voluptuous_serialize` - see `_whole_numbers` for what wrapping it costs.
+    """
+    return NumberSelector(
+        NumberSelectorConfig(min=minimum, step=1, mode=NumberSelectorMode.BOX)
     )
 
 
@@ -96,9 +112,9 @@ STEP_NAME_DATA_SCHEMA = vol.Schema({vol.Optional(CONF_NAME): TextSelector()})
 
 OPTIONS_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_UPDATE_INTERVAL): _whole_number_field(1),
-        vol.Required(CONF_INITIAL_ITEMS): _whole_number_field(0),
-        vol.Required(CONF_MAX_ITEMS_PER_POLL): _whole_number_field(0),
+        vol.Required(CONF_UPDATE_INTERVAL): _number_field(1),
+        vol.Required(CONF_INITIAL_ITEMS): _number_field(0),
+        vol.Required(CONF_MAX_ITEMS_PER_POLL): _number_field(0),
     }
 )
 
@@ -205,14 +221,20 @@ class RssNotifyOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Show the options form, pre-filled with the values in use."""
+        errors: dict[str, str] = {}
+
         if user_input is not None:
-            # the entry's update listener reloads the feed, which rebuilds the
-            # coordinator from the new options
-            return self.async_create_entry(data=user_input)
+            options, errors = _whole_numbers(user_input)
+            if not errors:
+                # the entry's update listener reloads the feed, which rebuilds
+                # the coordinator from the new options
+                return self.async_create_entry(data=options)
 
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                OPTIONS_SCHEMA, self.config_entry.options
+                OPTIONS_SCHEMA,
+                self.config_entry.options if user_input is None else user_input,
             ),
+            errors=errors,
         )

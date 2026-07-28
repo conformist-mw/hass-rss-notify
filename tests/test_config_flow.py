@@ -11,11 +11,14 @@ from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import CONF_NAME, CONF_URL
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
+import homeassistant.helpers.config_validation as cv
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 import voluptuous as vol
+import voluptuous_serialize
 
+from custom_components.rss_notify import config_flow
 from custom_components.rss_notify.client import NotModified
 from custom_components.rss_notify.config_flow import _fallback_name
 from custom_components.rss_notify.const import (
@@ -406,19 +409,26 @@ async def test_options_flow_rejects_fractional_values(
     mock_config_entry: MockConfigEntry,
     fractional_option: dict[str, float],
 ) -> None:
-    """A fraction is refused rather than silently truncated.
+    """A fraction comes back as a form error rather than being truncated.
 
     A number selector does not enforce its own `step`, so nothing but this stops
-    a fraction reaching the coercion that would round it away.
+    a fraction reaching the coercion that would round it away. The error is
+    reported on the offending field and the form keeps what was typed.
     """
     mock_config_entry.add_to_hass(hass)
     result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
 
-    with pytest.raises(InvalidData):
-        await hass.config_entries.options.async_configure(
-            result["flow_id"], {**DEFAULT_OPTIONS, **fractional_option}
-        )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {**DEFAULT_OPTIONS, **fractional_option}
+    )
 
+    field = next(iter(fractional_option))
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {field: "not_a_whole_number"}
+    assert suggested_values(result["data_schema"]) == {
+        **DEFAULT_OPTIONS,
+        **fractional_option,
+    }
     assert dict(mock_config_entry.options) == DEFAULT_OPTIONS
 
 
@@ -451,3 +461,26 @@ async def test_options_flow_reload_applies_the_new_options(
     assert reloaded.update_interval == timedelta(minutes=15)
     assert reloaded.initial_items == 3
     assert reloaded.max_items_per_poll == 0
+
+
+def _form_schemas() -> list[Any]:
+    """Return every schema this flow module shows in the UI."""
+    return [
+        pytest.param(schema, id=name)
+        for name, schema in vars(config_flow).items()
+        if name.endswith("_SCHEMA")
+    ]
+
+
+@pytest.mark.parametrize("schema", _form_schemas())
+def test_every_form_schema_is_serializable(schema: vol.Schema) -> None:
+    """A schema the frontend asks for must survive `voluptuous_serialize`.
+
+    This is what `helpers/data_entry_flow.py` does with the `data_schema` of
+    every form; a schema it cannot convert answers the flow endpoint with a 500
+    and the dialog never opens. Selectors convert, validator functions do not,
+    so no `vol.All(selector, callable)` may reach a form. Driving a flow through
+    `async_init` / `async_configure` proves nothing here: that path hands the
+    schema straight back to the caller and never serializes it.
+    """
+    voluptuous_serialize.convert(schema, custom_serializer=cv.custom_serializer)
