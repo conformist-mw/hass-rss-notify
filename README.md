@@ -31,7 +31,7 @@ than that timestamp.
 | Items without a date | never published after the first poll | published like any other item |
 | Items with a backdated or rewritten date | missed, or published again | published exactly once |
 | First poll of a new feed | publishes the whole current window (up to 20 items) | publishes the newest `initial_items` (default 1), rest silently marked seen |
-| Poll interval | fixed at 1 hour | per feed, default 5 minutes |
+| Poll interval | fixed at 1 hour, not configurable | 1 hour by default, set per feed |
 | Burst protection | caps a poll at `max_entries` (default 20) and discards the rest | `max_items_per_poll`, remaining items trickle out on later polls |
 | Item order | feed order | oldest → newest, so notifications read chronologically |
 
@@ -68,6 +68,7 @@ The dialog has two steps:
 | --- | --- | --- |
 | 1 | URL | The feed address. It is fetched and parsed right away, so a typo or a page that is not a feed is rejected in the dialog. |
 | 2 | Name | Pre-filled with the title that fetch found in the feed — its host if the feed reports none. Edit it or accept it; clearing it keeps the suggestion. It can be changed later by renaming the feed. |
+| 2 | Polling options | The three [options](#options) below, pre-filled with their defaults. Set them here or leave them; clearing a field keeps the default, and all three can be changed later. |
 
 The name is asked for after the URL because that is what lets it be filled in for you: the
 title belongs to the feed document, so it is only known once the feed has been fetched.
@@ -87,11 +88,12 @@ archive.
 
 ### Options
 
+Set while adding the feed, and afterwards under
 **Settings → Devices & services → RSS Notify → Configure**
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `update_interval` | 5 minutes | How often the feed is polled. |
+| `update_interval` | 60 minutes | How often the feed is polled. A conditional `GET` makes an unchanged poll cheap, not free, so the default is deliberately unhurried; shorten it for a feed you want to hear about within minutes. |
 | `initial_items` | 1 | How many of the newest items are announced when the feed is added. `0` sets the feed up completely silently. Only ever applies to the first poll of a feed, and is never capped by `max_items_per_poll`. |
 | `max_items_per_poll` | 10 | Upper bound on announcements per *regular* poll. Items above the cap stay unseen and are announced on the following polls, oldest first. `0` means unlimited. The first poll of a feed ignores the cap: it always announces `initial_items` items. |
 
@@ -347,8 +349,9 @@ A few more details worth knowing:
   unseen, and the next poll finds them in the document again — which is what makes the
   trickle survive a restart without a second piece of stored state. The trade-off: an item
   that leaves the feed's window before a poll gets to it is never announced. That needs a
-  feed publishing more than `max_items_per_poll` items per interval *and* a short window,
-  so if you follow such a feed, raise the cap or shorten `update_interval`.
+  feed publishing more than `max_items_per_poll` items per interval *and* a short window —
+  with the defaults, more than 10 items an hour. If you follow such a feed, raise the cap
+  or shorten `update_interval`.
 - every request is bounded by a fixed 30 second timeout and a 16 MiB response limit;
   neither is configurable. The body is read in 64 KiB pieces and the limit is applied to
   the running total, so a feed larger than it is refused outright rather than truncated,
