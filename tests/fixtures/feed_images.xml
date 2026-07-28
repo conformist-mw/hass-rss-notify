@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+  <channel>
+    <title>Images Blog</title>
+    <link>https://images.example.com/</link>
+    <description>Every shape a feed puts a picture in</description>
+    <item>
+      <title>Enclosure wins over everything below it</title>
+      <guid isPermaLink="false">enclosure-image</guid>
+      <enclosure url="https://cdn.example.com/enclosure.jpg" type="image/jpeg" length="12345"/>
+      <media:thumbnail url="https://cdn.example.com/ignored-thumb.jpg"/>
+      <description><![CDATA[<p>Body</p><img src="https://cdn.example.com/ignored-summary.jpg">]]></description>
+    </item>
+    <item>
+      <title>An enclosure that is not a picture</title>
+      <guid isPermaLink="false">enclosure-audio</guid>
+      <enclosure url="https://cdn.example.com/episode.mp3" type="audio/mpeg" length="9999"/>
+      <description>A podcast episode carries an enclosure too</description>
+    </item>
+    <item>
+      <title>Media RSS thumbnail beside a video</title>
+      <guid isPermaLink="false">media-thumbnail</guid>
+      <media:content url="https://cdn.example.com/clip.mp4" type="video/mp4"/>
+      <media:thumbnail url="https://cdn.example.com/thumb.jpg"/>
+      <description>The YouTube shape</description>
+    </item>
+    <item>
+      <title>Media content declared as an image</title>
+      <guid isPermaLink="false">media-content-medium</guid>
+      <media:content url="https://cdn.example.com/medium.jpg" medium="image"/>
+      <description>medium="image"</description>
+    </item>
+    <item>
+      <title>Media content with an image MIME type</title>
+      <guid isPermaLink="false">media-content-type</guid>
+      <media:content url="https://cdn.example.com/typed.png" type="image/png"/>
+      <description>type="image/png"</description>
+    </item>
+    <item>
+      <title>Media content declaring nothing</title>
+      <guid isPermaLink="false">media-content-bare</guid>
+      <media:content url="https://cdn.example.com/bare.jpg"/>
+      <description>Neither medium nor type, common in news feeds</description>
+    </item>
+    <item>
+      <title>Media content declared as a video</title>
+      <guid isPermaLink="false">media-content-video</guid>
+      <media:content url="https://cdn.example.com/movie.mp4" medium="video"/>
+      <description>A declared kind is believed</description>
+    </item>
+    <item>
+      <title>Picture in the summary HTML</title>
+      <guid isPermaLink="false">summary-img</guid>
+      <description><![CDATA[<p>Body</p><img src="https://cdn.example.com/in-summary.jpg?w=1&amp;h=2" alt="lead">]]></description>
+    </item>
+    <item>
+      <title>Summary whose first img has no src</title>
+      <guid isPermaLink="false">summary-img-no-src</guid>
+      <description><![CDATA[<img class="spacer"><p>Body</p><img src="https://cdn.example.com/second.jpg">]]></description>
+    </item>
+    <item>
+      <title>Summary picture given as a relative path</title>
+      <guid isPermaLink="false">summary-img-relative</guid>
+      <description><![CDATA[<img src="/img/relative.jpg">]]></description>
+    </item>
+    <item>
+      <title>Summary picture given protocol-relative</title>
+      <guid isPermaLink="false">summary-img-protocol-relative</guid>
+      <description><![CDATA[<img src="//cdn.example.com/protocol-relative.jpg">]]></description>
+    </item>
+    <item>
+      <title>Summary picture inlined as a data URI</title>
+      <guid isPermaLink="false">summary-img-data-uri</guid>
+      <description><![CDATA[<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">]]></description>
+    </item>
+    <item>
+      <title>No picture anywhere</title>
+      <guid isPermaLink="false">no-image</guid>
+      <description>Just words</description>
+    </item>
+  </channel>
+</rss>

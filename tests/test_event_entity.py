@@ -15,6 +15,7 @@ from homeassistant.const import (
 from homeassistant.core import Event, HomeAssistant, State
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
+import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_capture_events,
@@ -24,6 +25,7 @@ from pytest_homeassistant_custom_component.common import (
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.rss_notify.const import (
+    ATTR_IMAGE,
     ATTR_ITEM_ID,
     ATTR_MAX_LENGTH,
     ATTR_SUMMARY,
@@ -89,6 +91,47 @@ async def test_entity_is_created_and_named_after_its_feed(
     state = hass.states.get(entity_id)
     assert state.attributes[ATTR_FRIENDLY_NAME] == f"{FEED_TITLE} New item"
     assert state.attributes["event_types"] == [EVENT_TYPE_NEW_ITEM]
+
+
+# a URL of exactly the length the text fields are cut at, and one past it;
+# "https://cdn.example.com/" plus ".jpg" is 28 characters of the total
+IMAGE_AT_CAP = f"https://cdn.example.com/{'p' * (ATTR_MAX_LENGTH - 28)}.jpg"
+IMAGE_OVER_CAP = f"https://cdn.example.com/{'p' * (ATTR_MAX_LENGTH - 27)}.jpg"
+
+
+@pytest.mark.parametrize(
+    ("image", "expected"),
+    [
+        ("https://cdn.example.com/lead.jpg", "https://cdn.example.com/lead.jpg"),
+        (IMAGE_AT_CAP, IMAGE_AT_CAP),
+        (IMAGE_OVER_CAP, None),
+    ],
+    ids=["short", "at-the-cap", "over-the-cap"],
+)
+async def test_an_oversized_image_url_is_dropped_rather_than_truncated(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    hass_storage: dict[str, Any],
+    image: str,
+    expected: str | None,
+) -> None:
+    """The entity offers an image URL whole or not at all.
+
+    The text fields are cut at `ATTR_MAX_LENGTH` for the recorder's sake, but a
+    URL cut at 500 characters is not a shorter URL, it is a broken one: an
+    automation sending it gets a failed download instead of a photo. The bus
+    event keeps the URL whole in every case.
+    """
+    entry = make_config_entry()
+    seed_store(hass_storage, entry.entry_id, ["already-seen"])
+    serve(aioclient_mock, content=feed_bytes(["post-1"], image=image))
+    events = async_capture_events(hass, EVENT_NEW_ITEM)
+
+    await setup_entry(hass, entry)
+
+    assert events[0].data[ATTR_IMAGE] == image
+    attributes = hass.states.get(event_entity_id(hass, entry)).attributes
+    assert attributes[ATTR_IMAGE] == expected
 
 
 async def test_item_text_is_truncated_in_the_attributes(

@@ -99,13 +99,23 @@ def mock_config_entry() -> MockConfigEntry:
     return make_config_entry()
 
 
-def feed_bytes(keys: Sequence[str], title: str = FEED_TITLE, body: str = "") -> bytes:
-    """Build an RSS feed for `keys` (oldest first), served newest first."""
+def feed_bytes(
+    keys: Sequence[str], title: str = FEED_TITLE, body: str = "", image: str = ""
+) -> bytes:
+    """Build an RSS feed for `keys` (oldest first), served newest first.
+
+    `image` gives every item the same `image/jpeg` enclosure; without it the feed
+    ships no picture at all, which is the shape most tests want.
+    """
+    enclosure = (
+        f'<enclosure url="{image}" type="image/jpeg" length="1"/>' if image else ""
+    )
     items = [
         "<item>"
         f"<title>Post {key}</title>"
         f"<link>https://example.com/posts/{key}</link>"
         f'<guid isPermaLink="false">{key}</guid>'
+        f"{enclosure}"
         f"<description>{body or f'Body of {key}'}</description>"
         f"<pubDate>{format_datetime(BASE_PUBLISHED + timedelta(days=index))}</pubDate>"
         "</item>"

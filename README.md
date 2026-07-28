@@ -106,7 +106,9 @@ Two surfaces carry the same payload, pick whichever suits the automation:
 - the bus event `rss_notify_new_item` — full item text
 - the feed's `event` entity, event type `new_item` — the same fields as state
   attributes plus `event_type: new_item`, with `summary` and `summary_plain` cut to 500
-  characters so the recorder does not keep a copy of every article
+  characters so the recorder does not keep a copy of every article. An `image` longer
+  than that is dropped instead of cut: a truncated URL is a broken URL, so what the
+  entity offers is either usable or `null`. The bus event carries both whole
 
 An event entity holds the *last* event it fired, and Home Assistant **restores** that
 across a restart: right after a restart the entity is back with the timestamp and the
@@ -128,6 +130,7 @@ guard.
 | `summary` | Item description/content as the feed delivers it, usually HTML |
 | `summary_plain` | Same text with tags stripped, entities unescaped, whitespace collapsed |
 | `published` | Publication time in ISO 8601, or `null` when the feed gives none |
+| `image` | The item's picture, or `null` when the feed offers none. Taken from the first source that has one: an `image/*` enclosure, then Media RSS (`media:thumbnail`, then `media:content`), then the first `<img>` of the summary HTML. Only absolute `http`/`https` addresses are used, and nothing is substituted when there is no picture — a placeholder would be indistinguishable from a real one, while `null` lets the automation choose between a photo and a text message |
 
 Items are announced oldest first, one bus event and one state change per item, so a
 batch of five new posts produces five notifications in reading order. Items the feed
@@ -268,6 +271,45 @@ actions:
         url: "{{ trigger.event.data.link }}"
 ```
 
+### Bus event → photo when the feed ships one
+
+`image` is `null` for an item without a picture, which is what the two branches key on:
+a feed that illustrates some of its posts sends a photo for those and plain text for the
+rest, from one automation.
+
+```yaml
+alias: RSS picture to Telegram
+mode: queued
+max: 50
+triggers:
+  - trigger: event
+    event_type: rss_notify_new_item
+actions:
+  - choose:
+      - conditions: "{{ trigger.event.data.image is not none }}"
+        sequence:
+          - action: telegram_bot.send_photo
+            data:
+              url: "{{ trigger.event.data.image }}"
+              parse_mode: html
+              caption: >-
+                <b><a href="{{ trigger.event.data.link }}">{{
+                  trigger.event.data.title | e }}</a></b>
+    default:
+      - action: telegram_bot.send_message
+        data:
+          parse_mode: html
+          message: >-
+            <b><a href="{{ trigger.event.data.link }}">{{
+              trigger.event.data.title | e }}</a></b>
+```
+
+The URL is passed to Telegram, which fetches the picture itself, so it has to be
+reachable from the internet. A feed behind basic auth usually serves its images from the
+same host with the same credentials — those travel in the URL, so send such a feed's
+pictures with `notify.mobile_app_*` or fetch them yourself rather than handing the URL to
+a third party.
+
 ### One automation for many feeds
 
 `entry_id` filters the bus event without a template:
@@ -375,6 +417,10 @@ Two limits of that masking are worth knowing before you share a report:
   masked, because a path cannot be told apart from a credential
 - `feed_url` is part of every announced item, so it is also written to the recorder
   database and shown as the device's link — verbatim, credentials included
+- the item's `link` and `image` are the publisher's own URLs and are announced exactly as
+  the feed gives them. A private feed commonly serves its pictures from the same host with
+  the same credentials, so an `image` can carry them — worth knowing before handing that
+  URL to a service that fetches it for you. Neither URL is ever logged
 
 For more detail, turn on debug logging:
 
