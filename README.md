@@ -1,5 +1,6 @@
 # RSS Notify
 
+[![Release](https://img.shields.io/github/v/release/conformist-mw/hass-rss-notify?color=41BDF5&label=release)](https://github.com/conformist-mw/hass-rss-notify/releases/latest)
 [![CI](https://github.com/conformist-mw/hass-rss-notify/actions/workflows/ci.yml/badge.svg)](https://github.com/conformist-mw/hass-rss-notify/actions/workflows/ci.yml)
 [![HACS: custom repository](https://img.shields.io/badge/HACS-custom-41BDF5.svg)](https://www.hacs.xyz/docs/faq/custom_repositories/)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.7.0%2B-41BDF5.svg)](https://www.home-assistant.io/)
