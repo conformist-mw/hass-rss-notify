@@ -636,9 +636,29 @@ async def test_a_lasting_feed_problem_is_warned_about_only_once(
 
 
 def test_to_plain_text() -> None:
-    """HTML is reduced to collapsed, unescaped plain text."""
+    """HTML is reduced to unescaped plain text with its breaks intact."""
     assert to_plain_text("") == ""
     assert (
         to_plain_text("<p>Hello&nbsp;&amp; <b>welcome</b></p>\n<p>Bye</p>")
-        == "Hello & welcome Bye"
+        == "Hello & welcome\n\nBye"
     )
+
+
+def test_to_plain_text_keeps_line_breaks() -> None:
+    """`<br>` and list items become newlines rather than spaces."""
+    assert to_plain_text("one<br>two<br/>three") == "one\ntwo\nthree"
+    assert to_plain_text("one<BR />two") == "one\ntwo"
+    assert (
+        to_plain_text("<ul><li>first</li><li>second</li></ul><p>after</p>")
+        == "first\nsecond\n\nafter"
+    )
+
+
+def test_to_plain_text_break_shape_is_source_independent() -> None:
+    """Paragraph spacing does not depend on how the feed indents its markup."""
+    assert to_plain_text("<p>a</p><p>b</p>") == "a\n\nb"
+    assert to_plain_text("<p>a</p>\n<p>b</p>") == "a\n\nb"
+    assert to_plain_text("<p>a</p>\n\n\n\n<p>b</p>") == "a\n\nb"
+    assert to_plain_text("  <div>a</div>   <div>b</div>  ") == "a\n\nb"
+    # runs of spaces still collapse, and a break absorbs the spaces around it
+    assert to_plain_text("<p>a   b<br>   c   </p>") == "a b\nc"

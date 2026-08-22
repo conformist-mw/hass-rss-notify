@@ -38,7 +38,18 @@ HTTP_SCHEMES: Final = frozenset({"http", "https"})
 _READ_CHUNK_BYTES: Final = 64 * 1024
 
 _TAG_RE: Final = re.compile(r"<[^>]+>")
-_WHITESPACE_RE: Final = re.compile(r"\s+")
+# a summary is HTML, and its <br> and paragraph boundaries carry the author's
+# structure; dropping them turns every item into one wall of text
+_LINE_END_RE: Final = re.compile(r"<br\s*/?>|</(?:li|tr)\s*>", re.IGNORECASE)
+_PARA_END_RE: Final = re.compile(
+    r"</(?:p|div|blockquote|pre|h[1-6]|ul|ol|table|section|article)\s*>",
+    re.IGNORECASE,
+)
+# every whitespace character except the newline, so runs of spaces collapse
+# without eating the breaks just introduced
+_SPACES_RE: Final = re.compile(r"[^\S\n]+")
+_AROUND_BREAK_RE: Final = re.compile(r" ?\n ?")
+_BLANK_RUN_RE: Final = re.compile(r"\n{3,}")
 _IMG_SRC_RE: Final = re.compile(
     r"""<img\b[^>]*?\bsrc\s*=\s*["'](?P<src>[^"']+)["']""", re.IGNORECASE
 )
@@ -243,10 +254,19 @@ def sort_items_oldest_first(items: Iterable[FeedItem]) -> list[FeedItem]:
 
 
 def to_plain_text(value: str) -> str:
-    """Strip HTML tags, unescape entities and collapse whitespace."""
+    """Strip HTML tags and unescape entities, keeping block breaks as newlines.
+
+    Runs of spaces still collapse, but a `<br>`, list item or paragraph boundary
+    survives as a newline. The breaks are inserted before the tags are stripped
+    and are normalized afterwards, so the result does not depend on how the feed
+    happened to indent its markup: at most one blank line between paragraphs.
+    """
     if not value:
         return ""
-    return _WHITESPACE_RE.sub(" ", html.unescape(_TAG_RE.sub(" ", value))).strip()
+    text = _PARA_END_RE.sub("\n\n", _LINE_END_RE.sub("\n", value))
+    text = html.unescape(_TAG_RE.sub(" ", text))
+    text = _AROUND_BREAK_RE.sub("\n", _SPACES_RE.sub(" ", text))
+    return _BLANK_RUN_RE.sub("\n\n", text).strip()
 
 
 def _log_feed_problem(key: str, message: str, *args: Any) -> None:
