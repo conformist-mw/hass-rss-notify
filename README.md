@@ -3,6 +3,7 @@
 [![Release](https://img.shields.io/github/v/release/conformist-mw/hass-rss-notify?color=41BDF5&label=release)](https://github.com/conformist-mw/hass-rss-notify/releases/latest)
 [![CI](https://github.com/conformist-mw/hass-rss-notify/actions/workflows/ci.yml/badge.svg)](https://github.com/conformist-mw/hass-rss-notify/actions/workflows/ci.yml)
 [![HACS: custom repository](https://img.shields.io/badge/HACS-custom-41BDF5.svg)](https://www.hacs.xyz/docs/faq/custom_repositories/)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=conformist-mw&repository=hass-rss-notify&category=integration)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.7.0%2B-41BDF5.svg)](https://www.home-assistant.io/)
 
 A Home Assistant custom integration that watches RSS/Atom feeds and fires an event for
@@ -48,6 +49,11 @@ change, or a publisher that dumps twenty posts at once.
 ## Installation
 
 ### HACS (custom repository)
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=conformist-mw&repository=hass-rss-notify&category=integration)
+
+The badge opens HACS on this repository in your own instance: add it, download **RSS
+Notify**, restart Home Assistant. By hand instead:
 
 1. HACS → three-dot menu → **Custom repositories**
 2. Repository: `https://github.com/conformist-mw/hass-rss-notify`, type: **Integration**
@@ -129,7 +135,7 @@ guard.
 | `title` | Item title |
 | `link` | Item link |
 | `summary` | Item description/content as the feed delivers it, usually HTML |
-| `summary_plain` | Same text with tags stripped, entities unescaped, whitespace collapsed |
+| `summary_plain` | Same text with tags stripped and entities unescaped. Runs of spaces collapse, but a `<br>`, a list item and a paragraph boundary each survive as a newline, so the author's structure reaches the message |
 | `published` | Publication time in ISO 8601, or `null` when the feed gives none |
 | `image` | The item's picture, or `null` when the feed offers none. Taken from the first source that has one: an `image/*` enclosure, then Media RSS (`media:thumbnail`, then `media:content`), then the first `<img>` of the summary HTML. Only absolute `http`/`https` addresses are used, and nothing is substituted when there is no picture — a placeholder would be indistinguishable from a real one, while `null` lets the automation choose between a photo and a text message |
 
